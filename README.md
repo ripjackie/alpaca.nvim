@@ -8,6 +8,7 @@ My main goals:
 - learn lua
 
 to bootstrap:
+
 `init.lua`:
 
 ```
