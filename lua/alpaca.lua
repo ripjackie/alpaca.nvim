@@ -3,6 +3,16 @@ local uv = vim.uv or vim.loop
 
 AlpacaPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
 
+---@param arg string | string[]
+---@return string[]
+local function to_array(arg)
+  if type(arg) == "string" then
+    return {arg}
+  else
+    return arg
+  end
+end
+
 ---@class PluginSpec
 ---@field [1] string
 ---@field version string?
@@ -35,9 +45,9 @@ function Plugin:new(o)
   self.path = AlpacaPath .. (self.opt and "/opt/" or "/start/") .. self.name
   self.version = o.version
 
-  self.event = o.event and type(o.event) == "string" and {o.event} or o.event --[=[@as string[]?]=]
-  self.cmd = o.cmd and type(o.cmd) == "string" and {o.cmd} or o.cmd --[=[@as string[]?]=]
-  self.ft = o.ft and type(o.ft) == "string" and {o.ft} or o.ft --[=[@as string[]?]=]
+  self.event = o.event and to_array(o.event)
+  self.cmd = o.cmd and to_array(o.cmd)
+  self.ft = o.ft and to_array(o.ft)
 
   self.config = o.config
 
@@ -50,34 +60,35 @@ function Plugin:is_installed()
 end
 
 function Plugin:load()
-  if self.config then
-    if self.opt then
+  if self.config and self.opt then
+    if self.event or self.ft then
       local augroup = vim.api.nvim_create_augroup("AlpacaLazy", {})
-      if self.event or self.ft then
-        local event = self.ft and "FileType" or self.event
-        vim.api.nvim_create_autocmd(event, {
-          group = augroup,
-          callback = function ()
-            vim.cmd.packadd(self.name)
-            self.config()
-          end
-        })
-      elseif self.cmd then
-        local cmds = type(self.cmd) == "string" and {self.cmd} or self.cmd
-        ---@cast cmds string[]
-        for _, cmd in ipairs(cmds) do
-          vim.api.nvim_create_user_command(cmd, function(opts)
-            vim.cmd.packadd(self.name)
-            self.config()
-            vim.cmd({ cmd = cmd, args = opts.fargs, bang = opts.bang })
-          end, {})
+      local event = self.ft and "FileType" or self.event
+      vim.api.nvim_create_autocmd(event, {
+        group = augroup,
+        callback = function ()
+          vim.cmd.packadd(self.name)
+          self.config()
         end
+      })
+    elseif self.cmd then
+      local cmds = to_array(self.cmd)
+      for _, cmd in ipairs(cmds) do
+        vim.api.nvim_create_user_command(cmd, function(opts)
+          vim.cmd.packadd(self.name)
+          self.config()
+          vim.cmd({ cmd = cmd, args = opts.fargs, bang = opts.bang })
+        end, {})
       end
     else
+      vim.cmd.packadd(self.name)
       self.config()
     end
+  elseif self.config then
+    self.config()
   end
 end
+
 
 ---@param path string
 ---@return string[]
