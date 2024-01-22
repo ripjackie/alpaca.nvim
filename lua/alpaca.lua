@@ -1,16 +1,7 @@
 local vim = vim
+local uv = vim.uv or vim.loop
 
 AlpacaPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
-
----@class Alpaca
----@field public setup function
----@field public install function
----@field public update function
----@field public clean function
----@field package clone function
----@field package pull function
----@field package git function
----@field private plugins Plugin[]
 
 ---@class PluginSpec
 ---@field [1] string
@@ -21,33 +12,71 @@ AlpacaPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
 ---@field config function?
 
 ---@class Plugin
----@field spec PluginSpec
 ---@field name string
 ---@field url string
----@field opt boolean
 ---@field path string
+---@field opt boolean
+---@field version string?
+---@field event string[]?
+---@field cmd string[]?
+---@field ft string[]?
+---@field config function?
 Plugin = {}
 
----@param spec string | PluginSpec
-function Plugin:new(o, spec)
-  o = o or {}
+---@param o string | PluginSpec
+function Plugin:new(o)
+  o = (o and type(o) == "string" and {o} or o) or {} --[[@as PluginSpec]]
   setmetatable(o, self)
   self.__index = self
-  if type(spec) == "string" then
-    self.spec = { spec }
-  else
-    self.spec = spec
-  end
 
-  self.name = vim.split(self.spec[1], "/")[2]
-  self.url = string.format("https://github.com/%s.git", self.spec[1])
-  self.opt = (self.spec.event or self.spec.cmd or self.spec.ft) and true or false
+  self.name = vim.split(o[1], "/")[2]
+  self.url = string.format("https://github.com/%s.git", o[1])
+  self.opt = (o.event or o.cmd or o.ft) and true or false
   self.path = AlpacaPath .. (self.opt and "/opt/" or "/start/") .. self.name
+  self.version = o.version
+
+  self.event = o.event and type(o.event) == "string" and {o.event} or o.event --[=[@as string[]?]=]
+  self.cmd = o.cmd and type(o.cmd) == "string" and {o.cmd} or o.cmd --[=[@as string[]?]=]
+  self.ft = o.ft and type(o.ft) == "string" and {o.ft} or o.ft --[=[@as string[]?]=]
+
+  self.config = o.config
+
+  return o
 end
 
 ---@return boolean
 function Plugin:is_installed()
-  return vim.uv.fs_stat(self.path) and true or false
+  return uv.fs_stat(self.path) and true or false
+end
+
+function Plugin:load()
+  if self.config then
+    if self.opt then
+      local augroup = vim.api.nvim_create_augroup("AlpacaLazy", {})
+      if self.event or self.ft then
+        local event = self.ft and "FileType" or self.event
+        vim.api.nvim_create_autocmd(event, {
+          group = augroup,
+          callback = function ()
+            vim.cmd.packadd(self.name)
+            self.config()
+          end
+        })
+      elseif self.cmd then
+        local cmds = type(self.cmd) == "string" and {self.cmd} or self.cmd
+        ---@cast cmds string[]
+        for _, cmd in ipairs(cmds) do
+          vim.api.nvim_create_user_command(cmd, function(opts)
+            vim.cmd.packadd(self.name)
+            self.config()
+            vim.cmd({ cmd = cmd, args = opts.fargs, bang = opts.bang })
+          end, {})
+        end
+      end
+    else
+      self.config()
+    end
+  end
 end
 
 ---@param path string
@@ -62,33 +91,6 @@ local function parse_installed(path)
     end
   end
   return installed
-end
-
----@param plugin Plugin
-local function lazy_load(plugin)
-  local group = vim.api.nvim_create_augroup("AlpacaLazy", {})
-  if plugin.event or plugin.ft then
-    local event = plugin.ft and "FileType" or plugin.event
-    vim.api.nvim_create_autocmd(event, {
-      group = group,
-      callback = function()
-        vim.cmd.packadd(plugin.name)
-        if plugin.config then plugin.config() end
-      end
-    })
-  elseif plugin.cmd then
-    local cmds = type(plugin.cmd) == "string" and { plugin.cmd } or plugin.cmd
-    ---@cast cmds string[]
-    for _, cmd in pairs(cmds) do
-      vim.api.nvim_create_user_command(cmd, function(opts)
-        vim.cmd.packadd(plugin.name)
-        if plugin.config then plugin.config() end
-        vim.cmd({ cmd = cmd, args = opts.fargs, bang = opts.bang })
-      end, {})
-    end
-  else
-    vim.cmd.packadd(plugin.name)
-  end
 end
 
 ---@param args string[]
