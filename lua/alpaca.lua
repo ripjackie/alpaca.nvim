@@ -41,15 +41,6 @@ Plugins = {
   plugins = {},
   to_install = {},
   to_update = {},
-  ---@param plugin Plugin
-  add = function(self, plugin)
-    table.insert(self.plugins, plugin)
-    if not plugin:is_installed() then
-      table.insert(self.to_install, plugin)
-    elseif plugin:needs_update() then
-      table.insert(self.to_update, plugin)
-    end
-  end,
   install_any = function(self)
     local total = #self.to_install
     if total > 0 then
@@ -58,7 +49,8 @@ Plugins = {
         spawn("git", plugin.clone_args, nil, vim.schedule_wrap(function(err)
           counter = counter + 1
           if err then
-            vim.notify(string.format("[Alpaca.nvim] [Install] [%d/%d] (%s) %s", counter, total, plugin.name, "Failure: " .. err))
+            vim.notify(string.format("[Alpaca.nvim] [Install] [%d/%d] (%s) %s", counter, total, plugin.name,
+              "Failure: " .. err))
           else
             vim.notify(string.format("[Alpaca.nvim] [Install] [%d/%d] (%s) %s", counter, total, plugin.name, "Success"))
           end
@@ -77,7 +69,8 @@ Plugins = {
         spawn("git", plugin.pull_args, plugin.path, vim.schedule_wrap(function(err)
           counter = counter + 1
           if err then
-            vim.notify(string.format("[Alpaca.nvim] [Update] [%d/%d] (%s) %s", counter, total, plugin.name, "Failure: " .. err))
+            vim.notify(string.format("[Alpaca.nvim] [Update] [%d/%d] (%s) %s", counter, total, plugin.name,
+              "Failure: " .. err))
           else
             vim.notify(string.format("[Alpaca.nvim] [Update] [%d/%d] (%s) %s", counter, total, plugin.name, "Success"))
           end
@@ -113,7 +106,25 @@ Plugins = {
         end
       end
     end)
-  end
+  end,
+  init = function(self, configs)
+    vim.iter(configs):map(function(config)
+      config = type(config) == "string" and { config } or config
+      if #vim.split(config[1], "/") == 2 then
+        return Plugin:new(config)
+      end
+    end):each(function(plugin)
+      table.insert(self.plugins, plugin)
+      if not plugin:is_installed() then
+        table.insert(self.to_install, plugin)
+      elseif plugin:needs_update() then
+        table.insert(self.to_update, plugin)
+      end
+    end)
+    self:install_any()
+    self:update_any()
+    self:load_all()
+  end,
 }
 
 Installed = {
@@ -126,7 +137,8 @@ Installed = {
         spawn("rm", { "-r", plugin.path }, nil, vim.schedule_wrap(function(err)
           counter = counter + 1
           if err then
-            vim.notify(string.format("[Alpaca.nvim] [Remove] [%d/%d] (%s) %s", counter, total, plugin.name, "Failure: " .. err))
+            vim.notify(string.format("[Alpaca.nvim] [Remove] [%d/%d] (%s) %s", counter, total, plugin.name,
+              "Failure: " .. err))
           else
             vim.notify(string.format("[Alpaca.nvim] [Remove] [%d/%d] (%s) %s", counter, total, plugin.name, "Success"))
           end
@@ -137,20 +149,17 @@ Installed = {
       end)
     end
   end,
-  iter = function()
-    local it = vim.iter(vim.fs.dir(AlpacaPath, {depth=2}))
-    return function()
-      local name, type = it:next()
-      while name do
-        if type == "directory" and name ~= "opt" and name ~= "start" then
-          local out = vim.split(name, "/")
-          return {out[2], opt = out[1] == "opt" and true or false}
-        else
-          name, type = it:next()
-        end
+  init = function(self)
+    vim.iter(vim.fs.dir(AlpacaPath, { depth = 2 })):map(function(plugin)
+      local split = vim.split(plugin, "/")
+      if #split == 2 then
+        return { name = split[2], opt = split[1] }
       end
-    end
-  end
+    end):each(function(plugin)
+      local loaded = vim.iter(Plugins.plugins):map(function(plugin) end):each(function(plugin) end)
+      vim.print(plugin)
+    end)
+  end,
 }
 
 ---@package
@@ -227,55 +236,14 @@ function Plugin:needs_update()
   return true
 end
 
-function Plugin:load()
-  if self.config then
-    if self.opt then
-      if self.event or self.ft then
-        vim.api.nvim_create_autocmd(self.ft and "FileType" or self.event, {
-          group = vim.api.nvim_create_augroup("AlpacaLazy", {}),
-          callback = function()
-            vim.cmd.packadd(self.name)
-            self.config()
-          end
-        })
-      elseif self.cmd then
-        vim.tbl_map(function(cmd)
-          vim.api.nvim_create_user_command(cmd, function(opts)
-            vim.cmd.packadd(self.name)
-            self.config()
-            vim.cmd({ cmd = cmd, args = opts.fargs, bang = opts.bang })
-          end, {})
-        end, to_array(self.cmd))
-      else
-        vim.cmd.packadd(self.name)
-        self.config()
-      end
-    else
-      self.config()
-    end
-  end
-end
-
 local M = {}
 
 ---@param configs (string | PluginSpec)[]
 function M.setup(configs)
   vim.api.nvim_create_augroup("AlpacaLazy", { clear = true })
 
-  vim.iter(configs):map(function(config)
-    config = type(config) == "string" and {config} or config
-    if #vim.split(config[1], "/") == 2 then
-      return config
-    end
-  end):each(function(config)
-    Plugins:add(Plugin:new(config))
-  end)
-
-  Plugins:install_any()
-  Plugins:update_any()
-  Installed:clean_any()
-  Plugins:load_all()
-
+  Plugins:init(configs)
+  Installed:init()
 end
 
 return M
