@@ -197,11 +197,18 @@ function M.setup(configs)
     table.insert(Plugins, plugin)
   end)
 
-  vim.iter(Installed.iter()):each(function(plugin)
-    if vim.list_contains(vim.iter.map(function(config) return {config.name, config.opt} end, Plugins)) then
-
+  vim.iter(Installed.iter()):each(function(installed_plugin)
+    local loaded = false
+    vim.iter(Plugins):each(function(loaded_plugin)
+      if installed_plugin.name == loaded_plugin.name
+        and installed_plugin.opt == loaded_plugin.opt then
+        loaded = true
+      end
+    end)
+    if not loaded then
+      table.insert(to_clean, installed_plugin)
+    end
   end)
-
 end
 
 return M
