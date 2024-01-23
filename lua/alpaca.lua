@@ -3,8 +3,140 @@ local uv = vim.uv or vim.loop
 
 AlpacaPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
 
-Plugins = {}
+---@package
+---@param cmd string
+---@param args string[]
+---@param cwd string?
+---@param callback function
+local function spawn(cmd, args, cwd, callback)
+  local stderr = uv.new_pipe(false)
+  local spawn_args = { args = args, cwd = cwd, stdio = { nil, nil, stderr } }
+
+  local handle, _ = uv.spawn(cmd, spawn_args, function(code)
+    local buffer = ""
+    if code == 0 then
+      callback(nil)
+    else
+      stderr:read_start(function(err, data)
+        assert(not err, err)
+        if data then
+          buffer = buffer .. data
+        else
+          stderr:read_stop()
+          stderr:close()
+          buffer = string.gsub(buffer, "\n", "")
+          callback(buffer)
+        end
+      end)
+    end
+  end)
+
+  if not handle then
+    vim.notify("Failed to spawn git")
+  end
+end
+
+
+Plugins = {
+  plugins = {},
+  to_install = {},
+  to_update = {},
+  ---@param plugin Plugin
+  add = function(self, plugin)
+    table.insert(self.plugins, plugin)
+    if not plugin:is_installed() then
+      table.insert(self.to_install, plugin)
+    elseif plugin:needs_update() then
+      table.insert(self.to_update, plugin)
+    end
+  end,
+  install_any = function(self)
+    local total = #self.to_install
+    if total > 0 then
+      local counter = 0
+      vim.iter(self.to_install):each(function(plugin)
+        spawn("git", plugin.clone_args, nil, vim.schedule_wrap(function(err)
+          counter = counter + 1
+          if err then
+            vim.notify(string.format("[Alpaca.nvim] [Install] [%d/%d] (%s) %s", counter, total, plugin.name, "Failure: " .. err))
+          else
+            vim.notify(string.format("[Alpaca.nvim] [Install] [%d/%d] (%s) %s", counter, total, plugin.name, "Success"))
+          end
+          if counter == total then
+            vim.notify(string.format("[Alpaca.nvim] [Install] [Complete]"))
+          end
+        end))
+      end)
+    end
+  end,
+  update_any = function(self)
+    local total = #self.to_update
+    if total > 0 then
+      local counter = 0
+      vim.iter(self.to_update):each(function(plugin)
+        spawn("git", plugin.pull_args, plugin.path, vim.schedule_wrap(function(err)
+          counter = counter + 1
+          if err then
+            vim.notify(string.format("[Alpaca.nvim] [Update] [%d/%d] (%s) %s", counter, total, plugin.name, "Failure: " .. err))
+          else
+            vim.notify(string.format("[Alpaca.nvim] [Update] [%d/%d] (%s) %s", counter, total, plugin.name, "Success"))
+          end
+          if counter == total then
+            vim.notify(string.format("[Alpaca.nvim] [Update] [Complete]"))
+          end
+        end))
+      end)
+    end
+  end,
+  load_all = function(self)
+    vim.iter(self.plugins):each(function(plugin)
+      if plugin.config then
+        if plugin.event or plugin.ft then
+          vim.api.nvim_create_autocmd(plugin.ft and "FileType" or plugin.event, {
+            group = vim.api.nvim_create_augroup("AlpacaLazy", {}),
+            pattern = plugin.ft,
+            callback = function()
+              vim.cmd.packadd(plugin.name)
+              plugin.config()
+            end
+          })
+        elseif plugin.cmd then
+          vim.iter(plugin.cmd):each(function(cmd)
+            vim.api.nvim_create_user_command(cmd, function(opts)
+              vim.cmd.packadd(plugin.name)
+              plugin.config()
+              vim.cmd({ cmd = cmd, args = opts.fargs, bang = opts.bang })
+            end, {})
+          end)
+        else
+          plugin.config()
+        end
+      end
+    end)
+  end
+}
+
 Installed = {
+  to_clean = {},
+  clean_any = function(self)
+    local total = #self.to_clean
+    if total > 0 then
+      local counter = 0
+      vim.iter(self.to_clean):each(function(plugin)
+        spawn("rm", { "-r", plugin.path }, nil, vim.schedule_wrap(function(err)
+          counter = counter + 1
+          if err then
+            vim.notify(string.format("[Alpaca.nvim] [Remove] [%d/%d] (%s) %s", counter, total, plugin.name, "Failure: " .. err))
+          else
+            vim.notify(string.format("[Alpaca.nvim] [Remove] [%d/%d] (%s) %s", counter, total, plugin.name, "Success"))
+          end
+          if counter == total then
+            vim.notify(string.format("[Alpaca.nvim] [Remove] [Complete]"))
+          end
+        end))
+      end)
+    end
+  end,
   iter = function()
     local it = vim.iter(vim.fs.dir(AlpacaPath, {depth=2}))
     return function()
@@ -29,38 +161,6 @@ local function to_array(arg)
     return { arg }
   else
     return arg
-  end
-end
-
----@package
----@param args string[]
----@param cwd string?
----@param callback function
-local function spawn_git(args, cwd, callback)
-  local stderr = uv.new_pipe(false)
-  local spawn_args = { args = args, cwd = cwd, stdio = { nil, nil, stderr } }
-
-  local handle, _ = uv.spawn("git", spawn_args, function(code)
-    local buffer = ""
-    if code == 0 then
-      callback(nil)
-    else
-      stderr:read_start(function(err, data)
-        assert(not err, err)
-        if data then
-          buffer = buffer .. data
-        else
-          stderr:read_stop()
-          stderr:close()
-          -- buffer = string.gsub(buffer, "\n", "")
-          callback(buffer)
-        end
-      end)
-    end
-  end)
-
-  if not handle then
-    vim.notify("Failed to spawn git")
   end
 end
 
@@ -127,28 +227,6 @@ function Plugin:needs_update()
   return true
 end
 
-function Plugin:install()
-  spawn_git(self.clone_args, nil, vim.schedule_wrap(function(err)
-    local msg = "[Alpaca.nvim] [%s] (%s) %s"
-    if err then
-      vim.notify(string.format(msg, "Install", self.name, "Failure: " .. err))
-    else
-      vim.notify(string.format(msg, "Install", self.name, "Success"))
-    end
-  end))
-end
-
-function Plugin:update()
-  spawn_git(self.pull_args, self.path, vim.schedule_wrap(function(err)
-    local msg = "[Alpaca.nvim] [%s] (%s) %s"
-    if err then
-      vim.notify(string.format(msg, "Update", self.name, "Failure: " .. err))
-    else
-      vim.notify(string.format(msg, "Update", self.name, "Success"))
-    end
-  end))
-end
-
 function Plugin:load()
   if self.config then
     if self.opt then
@@ -182,33 +260,22 @@ local M = {}
 
 ---@param configs (string | PluginSpec)[]
 function M.setup(configs)
-  local to_install = {}
-  local to_update = {}
-  local to_clean = {}
   vim.api.nvim_create_augroup("AlpacaLazy", { clear = true })
 
-  vim.iter(configs):each(function(config)
-    local plugin = Plugin:new(config)
-    if not plugin:is_installed() then
-      table.insert(to_install, plugin)
-    elseif plugin:needs_update() then
-      table.insert(to_update, plugin)
+  vim.iter(configs):map(function(config)
+    config = type(config) == "string" and {config} or config
+    if #vim.split(config[1], "/") == 2 then
+      return config
     end
-    table.insert(Plugins, plugin)
+  end):each(function(config)
+    Plugins:add(Plugin:new(config))
   end)
 
-  vim.iter(Installed.iter()):each(function(installed_plugin)
-    local loaded = false
-    vim.iter(Plugins):each(function(loaded_plugin)
-      if installed_plugin.name == loaded_plugin.name
-        and installed_plugin.opt == loaded_plugin.opt then
-        loaded = true
-      end
-    end)
-    if not loaded then
-      table.insert(to_clean, installed_plugin)
-    end
-  end)
+  Plugins:install_any()
+  Plugins:update_any()
+  Installed:clean_any()
+  Plugins:load_all()
+
 end
 
 return M
