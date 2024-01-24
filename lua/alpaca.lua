@@ -134,10 +134,12 @@ Installed = {
     if total > 0 then
       local counter = 0
       vim.iter(self.to_clean):each(function(plugin)
-        spawn("rm", { "-r", plugin.path }, nil, vim.schedule_wrap(function(err)
+        local path = AlpacaPath .. (plugin.opt and "/opt/" or "/start/") .. plugin.name
+        spawn("rm", { "-r", path }, nil, vim.schedule_wrap(function(err)
           counter = counter + 1
           if err then
-            vim.notify(string.format("[Alpaca.nvim] [Remove] [%d/%d] (%s) %s", counter, total, plugin.name,
+            vim.notify(string.format("[Alpaca.nvim] [Remove] [%d/%d] (%s lazy=%s) %s", counter, total, plugin.name,
+              tostring(plugin.opt)
               "Failure: " .. err))
           else
             vim.notify(string.format("[Alpaca.nvim] [Remove] [%d/%d] (%s) %s", counter, total, plugin.name, "Success"))
@@ -170,9 +172,11 @@ Installed = {
         return vim.deep_equal(loaded_plugin, plugin)
       end)
       if not loaded then
-        vim.print(plugin)
+        table.insert(self.to_clean, plugin)
       end
     end)
+
+    self:clean_any()
   end,
 }
 
@@ -190,6 +194,8 @@ end
 ---@class PluginSpec
 ---@field [1] string
 ---@field version string?
+---@field branch string?
+---@field tag string?
 ---@field event (string | string[])?
 ---@field ft (string | string[])?
 ---@field cmd (string | string[])?
@@ -231,6 +237,10 @@ function Plugin:new(spec)
   plugin.ft = spec.ft and to_array(spec.ft)
 
   plugin.clone_args = vim.list_extend({ "clone", plugin.url, plugin.path }, self.clone_args)
+  if spec.branch then
+  end
+  if spec.tag then
+  end
   if spec.version then
     vim.list_extend(plugin.clone_args, { "--branch", spec.version })
   end
@@ -248,6 +258,61 @@ end
 function Plugin:needs_update()
   -- TODO
   return true
+end
+
+function git(args, cwd, callback)
+  local stdout = uv.new_pipe(false)
+  local stderr = uv.new_pipe(false)
+
+  stderr:read_start(function(read_err, data)
+    if read_err then
+      callback(read_err)
+    elseif data then
+      callback(data)
+    else
+      stderr:read_stop()
+      stderr:close()
+    end
+  end)
+
+  stdout:read_start(function(read_err, data)
+    if read_err then
+      callback(read_err)
+    elseif data then
+      callback(data)
+    else
+      stdout:read_close()
+      stdout:close()
+    end
+  end)
+
+  local handle, pid = uv.spawn("git", {
+    args = args, cwd = cwd, stdio = { nil, stdout, stderr }
+  }, function(code, signal)
+
+  end)
+end
+
+function Plugin:clone()
+  spawn("git", {
+    "init"
+  }, self.path, function(err)
+    assert(not err, err)
+    spawn("git", {
+      "remote", "add", "--no-tags", "origin", self.url
+    }, self.path, function(err)
+      assert(not err, err)
+      local args = { "fetch", "origin" }
+      if self.tag then
+        vim.list_expand(args, { string.format("refs/tags/%s:refs/tags/%s", self.tag, self.tag) })
+      elseif self.branch then
+        vim.list_expand(args, { string.format("refs/heads/%s:refs/heads/%s", self.branch, self.branch) })
+      end
+      spawn("git", args, nil, function(err)
+        assert(not err, err)
+      end)
+    end)
+  end)
 end
 
 local M = {}
