@@ -107,7 +107,7 @@ Plugins = {
       end
     end)
   end,
-  init = function(self, configs)
+  setup = function(self, configs)
     vim.iter(configs):map(function(config)
       config = type(config) == "string" and { config } or config
       if #vim.split(config[1], "/") == 2 then
@@ -149,15 +149,29 @@ Installed = {
       end)
     end
   end,
-  init = function(self)
-    vim.iter(vim.fs.dir(AlpacaPath, { depth = 2 })):map(function(plugin)
+  setup = function(self)
+    local it = vim.iter(vim.fs.dir(AlpacaPath, { depth = 2 }))
+    it:map(function(plugin)
       local split = vim.split(plugin, "/")
       if #split == 2 then
-        return { name = split[2], opt = split[1] }
+        return {
+          name = split[2],
+          opt = split[1] == "opt" and true or false
+        }
       end
     end):each(function(plugin)
-      local loaded = vim.iter(Plugins.plugins):map(function(plugin) end):each(function(plugin) end)
-      vim.print(plugin)
+      local lp_it = vim.iter(Plugins.plugins)
+      local loaded = lp_it:map(function(loaded_plugin)
+        return {
+          name = loaded_plugin.name,
+          opt = (loaded_plugin.event or loaded_plugin.cmd or loaded_plugin.ft) and true or false
+        }
+      end):find(function(loaded_plugin)
+        return vim.deep_equal(loaded_plugin, plugin)
+      end)
+      if not loaded then
+        vim.print(plugin)
+      end
     end)
   end,
 }
@@ -242,8 +256,8 @@ local M = {}
 function M.setup(configs)
   vim.api.nvim_create_augroup("AlpacaLazy", { clear = true })
 
-  Plugins:init(configs)
-  Installed:init()
+  Plugins:setup(configs)
+  Installed:setup()
 end
 
 return M
