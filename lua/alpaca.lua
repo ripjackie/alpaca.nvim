@@ -193,29 +193,24 @@ end
 
 ---@class PluginSpec
 ---@field [1] string
----@field version string?
 ---@field branch string?
 ---@field tag string?
 ---@field event (string | string[])?
----@field ft (string | string[])?
 ---@field cmd (string | string[])?
+---@field ft (string | string[])?
 ---@field config function?
 
 ---@class Plugin
 ---@field name string
 ---@field url string
----@field opt boolean
 ---@field path string
 ---@field config function?
+---@field branch string?
+---@field tag string?
 ---@field event string[]?
 ---@field cmd string[]?
 ---@field ft string[]?
----@field clone_args string[]
----@field pull_args string[]
-Plugin = {
-  clone_args = { "--depth=1", "--recurse-submodules", "--shallow-submodules" },
-  pull_args = { "--recurse-submodules", "--update-shallow" }
-}
+Plugin = {}
 
 ---@param spec string | PluginSpec
 function Plugin:new(spec)
@@ -226,94 +221,102 @@ function Plugin:new(spec)
   self.__index = self
 
   plugin.name = vim.split(spec[1], "/")[2]
-
   plugin.url = string.format("https://github.com/%s.git", spec[1])
-  plugin.opt = (spec.event or spec.cmd or spec.ft) and true or false
-  plugin.path = AlpacaPath .. (plugin.opt and "/opt/" or "/start/") .. plugin.name
-
+  plugin.path = AlpacaPath .. ((spec.event or spec.cmd or spec.ft) and "/opt/" or "/start/") .. plugin.name
   plugin.config = spec.config
   plugin.event = spec.event and to_array(spec.event)
   plugin.cmd = spec.cmd and to_array(spec.cmd)
   plugin.ft = spec.ft and to_array(spec.ft)
-
-  plugin.clone_args = vim.list_extend({ "clone", plugin.url, plugin.path }, self.clone_args)
-  if spec.branch then
-  end
-  if spec.tag then
-  end
-  if spec.version then
-    vim.list_extend(plugin.clone_args, { "--branch", spec.version })
-  end
-  plugin.pull_args = vim.list_extend({ "pull" }, self.pull_args)
+  plugin.branch = spec.branch
+  plugin.tag = spec.tag
 
   return plugin
 end
 
 ---@return boolean
-function Plugin:is_installed()
-  return uv.fs_stat(self.path) and true or false
+function Plugin:needs_installed()
+  if uv.fs_stat(self.path) then
+    return false
+  else
+    return true
+  end
+end
+
+
+---@param args string[]
+---@param cwd string?
+---@param callback fun(stderr: string?, stdout: string?): nil
+local function git(args, cwd, callback)
+  local stdout = uv.new_pipe(false)
+  local stderr = uv.new_pipe(false)
+  local handle, _ = uv.spawn("git", {
+    args = args, cwd = cwd, stdio = { nil, stdout, stderr }
+  }, function(code, signal)
+    local buffer = ""
+    if code == 0 then
+      stdout:read_start(function(err, data)
+        if err then
+          callback(err, nil)
+        elseif data then
+          buffer = buffer .. data
+        else
+          callback(nil, buffer)
+        end
+      end)
+    else
+      stderr:read_start(function(err, data)
+        if err then
+          callback(err, nil)
+        elseif data then
+          buffer = buffer .. data
+        else
+          callback(buffer, nil)
+        end
+      end)
+    end
+  end)
+  if not handle then
+    callback("Failed to start git", nil)
+  end
 end
 
 ---@return boolean
 function Plugin:needs_update()
-  -- TODO
+  git({"fetch", "origin", "--tags"}, self.path, function(err, out)
+  end)
   return true
 end
 
-function git(args, cwd, callback)
-  local stdout = uv.new_pipe(false)
-  local stderr = uv.new_pipe(false)
-
-  stderr:read_start(function(read_err, data)
-    if read_err then
-      callback(read_err)
-    elseif data then
-      callback(data)
-    else
-      stderr:read_stop()
-      stderr:close()
-    end
-  end)
-
-  stdout:read_start(function(read_err, data)
-    if read_err then
-      callback(read_err)
-    elseif data then
-      callback(data)
-    else
-      stdout:read_close()
-      stdout:close()
-    end
-  end)
-
-  local handle, pid = uv.spawn("git", {
-    args = args, cwd = cwd, stdio = { nil, stdout, stderr }
-  }, function(code, signal)
-
-  end)
-end
-
-function Plugin:clone()
-  spawn("git", {
-    "init"
-  }, self.path, function(err)
-    assert(not err, err)
-    spawn("git", {
-      "remote", "add", "--no-tags", "origin", self.url
-    }, self.path, function(err)
-      assert(not err, err)
-      local args = { "fetch", "origin" }
-      if self.tag then
-        vim.list_expand(args, { string.format("refs/tags/%s:refs/tags/%s", self.tag, self.tag) })
-      elseif self.branch then
-        vim.list_expand(args, { string.format("refs/heads/%s:refs/heads/%s", self.branch, self.branch) })
+---@param callback fun(err: string?): nil
+function Plugin:install(callback)
+  git({ "clone", self.url, self.path, "--depth=1", "--recurse-submodules", "--shallow-submodules" }, nil, function(err, out)
+    if err then callback(err) end
+    if out then print(out) end
+    git({ "fetch", "--tags", "origin" }, self.path, function(err, out)
+      if err then callback(err) end
+      if out then print(out) end
+      if self.branch then
+        git({ "checkout", self.branch }, self.path, function(err, out)
+          if err then callback(err) end
+          if out then print(out) end
+          callback(nil)
+        end)
+      elseif self.tag then
+        local newest = self:find_newest_tag()
+        git({ "checkout", newest }, self.path, function(err, out)
+          if err then callback(err) end
+          if out then print(out) end
+          callback(nil)
+        end)
       end
-      spawn("git", args, nil, function(err)
-        assert(not err, err)
-      end)
     end)
   end)
 end
+
+---@param callback fun(err: string?): nil
+function Plugin:update(callback)
+end
+
 
 local M = {}
 
@@ -321,8 +324,23 @@ local M = {}
 function M.setup(configs)
   vim.api.nvim_create_augroup("AlpacaLazy", { clear = true })
 
-  Plugins:setup(configs)
-  Installed:setup()
+  vim.iter(configs):map(function(config)
+    return Plugin:new(config)
+  end):each(function(plugin)
+    if plugin:needs_installed() then
+      vim.print(plugin)
+      plugin:install(function(err)
+        if err then
+          vim.schedule_wrap(function()
+            vim.print(err)
+          end)
+        end
+      end)
+    end
+  end)
+
+  -- Plugins:setup(configs)
+  -- Installed:setup()
 end
 
 return M
