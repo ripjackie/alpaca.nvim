@@ -3,6 +3,75 @@ local uv = vim.uv or vim.loop
 
 AlpacaPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
 
+---@class Git
+Git = {}
+
+---@param pipe userdata
+---@param callback fun(err: string?, data: string?): nil
+function Git:read_pipe(pipe, callback)
+  local buffer = ""
+  pipe:read_start(function(err, data)
+    if err then
+      callback(err, nil)
+    elseif data then
+      buffer = buffer .. data
+    else
+      callback(nil, buffer)
+    end
+  end)
+end
+---@param args string[]
+---@param cwd string?
+---@param callback fun(err: string?, ok: boolean, stdout: string?, stderr: string?): nil
+function Git:spawn_cap(args, cwd, callback)
+  local stdout = uv.new_pipe(false)
+  local stderr = uv.new_pipe(false)
+  local handle = uv.spawn("git", {
+    args = args, cwd = cwd, stdio = { nil, stdout, stderr }
+  }, function(code)
+    local ok = code == 0
+    self:read_pipe(stdout, function(err, data_out)
+      if err then callback(err, ok, nil, nil) end
+      self:read_pipe(stderr, function(err, data_err)
+        if err then callback(err, ok, nil, nil) end
+        stdout:close()
+        stderr:close()
+        callback(nil, ok, data_out, data_err)
+      end)
+    end)
+  end)
+  if not handle then
+    callback(string.format("Failed to spawn git with args ( %s ) at ( %s )", vim.iter(args):join(" "), cwd), false, nil,
+      nil)
+  end
+end
+
+function Git:spawn(args, cwd, callback)
+  local handle = uv.spawn("git", {
+    args = args, cwd = cwd, stdio = { nil, 1, 2 }
+  }, function(code)
+    callback(nil, code == 0)
+  end)
+  if not handle then
+    callback(string.format("Failed to spawn git with args ( %s ) at ( %s )", vim.iter(args):join(" "), cwd), false)
+  end
+---@param plugin Plugin
+---@param callback fun(ok: boolean): nil
+function Git:clone(plugin, callback)
+  self:spawn({ "--depth=1", plugin.url, plugin.path }, nil, function(ok)
+    callback(ok)
+  end)
+end
+
+function Git:fetch(plugin, callback)
+end
+
+function Git:checkout(plugin, callback)
+end
+
+Plugin = {}
+Alpaca = {}
+
 ---@package
 ---@param cmd string
 ---@param args string[]
@@ -242,7 +311,6 @@ function Plugin:needs_installed()
   end
 end
 
-
 ---@param args string[]
 ---@param cwd string?
 ---@param callback fun(stderr: string?, stdout: string?): nil
@@ -282,41 +350,41 @@ end
 
 ---@return boolean
 function Plugin:needs_update()
-  git({"fetch", "origin", "--tags"}, self.path, function(err, out)
+  git({ "fetch", "origin", "--tags" }, self.path, function(err, out)
   end)
   return true
 end
 
 ---@param callback fun(err: string?): nil
 function Plugin:install(callback)
-  git({ "clone", self.url, self.path, "--depth=1", "--recurse-submodules", "--shallow-submodules" }, nil, function(err, out)
-    if err then callback(err) end
-    if out then print(out) end
-    git({ "fetch", "--tags", "origin" }, self.path, function(err, out)
+  git({ "clone", self.url, self.path, "--depth=1", "--recurse-submodules", "--shallow-submodules" }, nil,
+    function(err, out)
       if err then callback(err) end
       if out then print(out) end
-      if self.branch then
-        git({ "checkout", self.branch }, self.path, function(err, out)
-          if err then callback(err) end
-          if out then print(out) end
-          callback(nil)
-        end)
-      elseif self.tag then
-        local newest = self:find_newest_tag()
-        git({ "checkout", newest }, self.path, function(err, out)
-          if err then callback(err) end
-          if out then print(out) end
-          callback(nil)
-        end)
-      end
+      git({ "fetch", "--tags", "origin" }, self.path, function(err, out)
+        if err then callback(err) end
+        if out then print(out) end
+        if self.branch then
+          git({ "checkout", self.branch }, self.path, function(err, out)
+            if err then callback(err) end
+            if out then print(out) end
+            callback(nil)
+          end)
+        elseif self.tag then
+          local newest = self:find_newest_tag()
+          git({ "checkout", newest }, self.path, function(err, out)
+            if err then callback(err) end
+            if out then print(out) end
+            callback(nil)
+          end)
+        end
+      end)
     end)
-  end)
 end
 
 ---@param callback fun(err: string?): nil
 function Plugin:update(callback)
 end
-
 
 local M = {}
 
