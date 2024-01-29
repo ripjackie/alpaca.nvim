@@ -13,20 +13,6 @@ end
 
 ---@class Git
 Git = {}
----@param pipe userdata
----@param callback fun(err: string?, data: string?): nil
-function Git:read_pipe(pipe, callback)
-  local buffer = ""
-  pipe:read_start(function(err, data)
-    if err then
-      callback(err, nil)
-    elseif data then
-      buffer = buffer .. data
-    else
-      callback(nil, buffer)
-    end
-  end)
-end
 
 ---@param args string[]
 ---@param cwd string?
@@ -34,13 +20,27 @@ end
 function Git:spawn(args, cwd, callback)
   local stdout = uv.new_pipe(false)
   local stderr = uv.new_pipe(false)
+  ---@param pipe userdata
+  ---@param callback fun(err: string?, data: string?): nil
+  local function read_pipe(pipe, callback)
+    local buffer = ""
+    pipe:read_start(function(err, data)
+      if err then
+        callback(err, nil)
+      elseif data then
+        buffer = buffer .. data
+      else
+        callback(nil, buffer)
+      end
+    end)
+  end
   local handle = uv.spawn("git", {
     args = args, cwd = cwd, stdio = { nil, stdout, stderr }
   }, function(code)
     local ok = code == 0
-    self:read_pipe(stdout, function(err, data_out)
+    read_pipe(stdout, function(err, data_out)
       if err then callback(err, ok, nil, nil) end
-      self:read_pipe(stderr, function(err, data_err)
+      read_pipe(stderr, function(err, data_err)
         if err then callback(err, ok, nil, nil) end
         stdout:close()
         stderr:close()
@@ -54,7 +54,15 @@ function Git:spawn(args, cwd, callback)
   end
 end
 
+---@param plugin Plugin
+---@param callback fun(err: string?): nil
 function Git:fetch(plugin, callback)
+  self:spawn({
+    "fetch", "--tags"
+  }, plugin.path, function(err, ok, stdout, stderr)
+    if err then callback(err) end
+
+  end)
 end
 
 function Git:checkout(plugin, callback)
@@ -128,15 +136,19 @@ Alpaca = {
 }
 
 function Alpaca:install()
+  print("Install!")
 end
 
 function Alpaca:update()
+  print("Update!")
 end
 
 function Alpaca:remove()
+  print("Remove!")
 end
 
 function Alpaca:load()
+  print("Load!")
 end
 
 ---@param specs (string | PluginSpec)[]
