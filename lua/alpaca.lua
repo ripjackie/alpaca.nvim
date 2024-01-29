@@ -1,4 +1,5 @@
 local vim = vim
+  if not handle
 local uv = vim.uv or vim.loop
 
 AlpacaPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
