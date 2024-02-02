@@ -1,5 +1,6 @@
 local vim = vim
 local uv = vim.uv or vim.loop
+local co = coroutine
 
 ---@alias Path string
 
@@ -16,12 +17,106 @@ local function to_array(input)
   end
 end
 
-
 local Git = {}
+
+---@param args string[]
+---@param cwd string?
+function Git:spawn(args, cwd)
+  local main_thread = co.running()
+  local stdio = { nil, uv.new_pipe(false), uv.new_pipe(false) }
+
+  local function on_exit(code, signal)
+    local cb_thread = co.running()
+    local function read_pipe(pipe)
+      local buffer = ""
+      pipe:read_start(function(err, data)
+        if data then
+          buffer = buffer .. data
+        else
+          co.resume(cb_thread, err, buffer)
+        end
+      end)
+      return co.yield()
+    end
+
+    local stdout_err, stdout = read_pipe(stdio[2])
+    assert(not stdout_err, stdout_err)
+    local stderr_err, stderr = read_pipe(stdio[3])
+    assert(not stderr_err, stderr_err)
+    co.resume(main_thread, stdout, stderr, code, signal)
+  end
+
+  local handle = uv.spawn("git", {
+    args = args,
+    cwd = cwd,
+    stdio = stdio
+  }, co.wrap(on_exit))
+  if handle then
+    return co.yield()
+  end
+end
+
+---@param plugin Plugin
+function Git:init(plugin)
+  print("init " .. plugin.name)
+  local _, _, code = Git:spawn({ "init", plugin.path }, nil)
+  assert(code == 0, "Failed to init repo @ " .. plugin.path)
+end
+
+---@param plugin Plugin
+function Git:add_remote(plugin)
+  print("add remote " .. plugin.name)
+  local out, err, code = Git:spawn({ "remote", "add", "origin", plugin.url }, plugin.path)
+  assert(code == 0, "Failed to add remote " .. plugin.url)
+end
+
+---@param plugin Plugin
+function Git:fetch(plugin)
+  print("fetch " .. plugin.name)
+  local args = { "fetch", "origin" }
+  if plugin.branch then
+    table.insert(args, plugin.branch)
+  end
+  local out, err, code = Git:spawn(args, plugin.path)
+  assert(code == 0, "Failed to fetch " .. plugin.name)
+
+end
+
+---@param plugin Plugin
+function Git:checkout(plugin)
+  print("checkout " .. plugin.name)
+  local args = { "checkout" }
+  if plugin.tag then
+    print("tag!")
+    local range = vim.version.range(plugin.tag)
+    print("got here")
+    local out, _, code = Git:spawn({ "tag", "--sort=-refname"}, plugin.path)
+    print("got here")
+    assert(code == 0, "Failed to run Tag")
+    print("got here")
+    local tag = vim.iter(ipairs(vim.split(out, '\n'))):find(function(tag)
+      return range:has(vim.version.parse(tag))
+    end)
+    print("got here")
+    assert(tag, "Failed to fetch tags")
+    table.insert(args, tag)
+  elseif plugin.branch then
+    print("branch!")
+    table.insert(args, plugin.branch)
+  end
+
+  print(vim.inspect(args))
+  local _, _, code = Git:spawn(args, plugin.path)
+  assert(code == 0, "Failed to Run Checkout")
+end
+
+
+---@depricated
+local oldGit = {}
 ---@param args string[]
 ---@param cwd string?
 ---@param callback fun(err: string?, ok: boolean, stdout: string?, stderr: string?): nil
-function Git:spawn(args, cwd, callback)
+function oldGit:spawn(args, cwd, callback)
   local stdout = uv.new_pipe(false)
   local stderr = uv.new_pipe(false)
 
@@ -76,7 +171,7 @@ end
 
 ---@param plugin Plugin
 ---@param callback fun(err: string?): nil
-function Git:fetch(plugin, callback)
+function oldGit:fetch(plugin, callback)
   local symbolic_ref_args = { "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD" }
   self:spawn(symbolic_ref_args, plugin.path, function(branch_err, branch_ok, branch_stdout, branch_stderr)
     if branch_err or not branch_ok then
@@ -97,7 +192,7 @@ end
 
 ---@param plugin Plugin
 ---@param callback fun(err: string?): nil
-function Git:clone(plugin, callback)
+function oldGit:clone(plugin, callback)
   local clone_args = {
     "clone", "--depth=1", "--recurse-submodules", "--shallow-submodules", "--no-checkout",
     plugin.url, plugin.path
@@ -113,7 +208,7 @@ end
 
 ---@param plugin Plugin
 ---@param callback fun(err: string?): nil
-function Git:checkout(plugin, callback)
+function oldGit:checkout(plugin, callback)
   local checkout_args = { "checkout" }
   if plugin.tag then
     local tag_spec = vim.version.range(plugin.tag)
@@ -158,6 +253,7 @@ function Git:checkout(plugin, callback)
   end
 end
 
+
 ---@class PluginSpec
 ---@field [1] string
 ---@field as string?
@@ -179,6 +275,8 @@ end
 ---@field event string[]?
 ---@field cmd string[]?
 ---@field ft string[]?
+---@field installed boolean
+---@field updated boolean
 local Plugin = {}
 
 ---@param spec string | PluginSpec
@@ -199,13 +297,73 @@ function Plugin:new(spec)
   plugin.opt = (plugin.event or plugin.cmd or plugin.ft) and true or false
   plugin.path = AlpacaPath .. (plugin.opt and "/opt/" or "/start/") .. plugin.name
 
+  plugin.installed = vim.uv.fs_stat(plugin.path) and true or false
+  plugin.updated = self:check_updates()
   return plugin
 end
 
+---@return boolean
+function Plugin:check_updates()
+  if not self.installed then
+    return false
+  elseif self.branch then
+    -- 
+  elseif self.tag then
+    --
+  else
+    --
+  end
+end
+
+
 local Alpaca = {
+  to_install = {},
+  to_update = {},
+  to_remove = {}
 }
 
-local M = {}
-function M.setup(specs)
+function Alpaca:install()
+  vim.iter(ipairs(self.to_install)):map(function(_, plugin)
+    return co.create(function()
+      Git:init(plugin)
+      Git:add_remote(plugin)
+      Git:fetch(plugin)
+      Git:checkout(plugin)
+    end)
+  end):each(function(coro)
+    co.resume(coro)
+  end)
 end
-return M
+
+---@param specs (string | PluginSpec)[]
+function Alpaca:setup(specs)
+  assert(specs and not vim.tbl_isempty(specs), "No Specs Supplied")
+  vim.iter(specs):map(function(spec)
+    return Plugin:new(spec)
+  end):each(function(plugin)
+    if not plugin.installed then
+      table.insert(self.to_install, plugin)
+    end
+  end)
+
+  self:install()
+end
+
+local M = {
+  setup = coroutine.wrap(Alpaca.setup)
+}
+
+M.setup = coroutine.wrap(function(specs)
+  Alpaca:setup(specs)
+end)
+
+M.setup({
+  {
+    "lukas-reineke/indent-blankline.nvim",
+    tag = "v3.5.x"
+  },
+  {
+    "altermo/ultimate-autopair.nvim",
+    branch = "v0.6"
+  }
+})
