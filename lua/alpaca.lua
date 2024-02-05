@@ -1,4 +1,3 @@
-local vim = vim
 local uv = vim.uv or vim.loop
 
 local git = {}
@@ -7,13 +6,10 @@ local git = {}
 ---@param callback fun(err: string?): nil
 function git:clone(plugin, callback)
   local args = { "git", "clone", "--depth=1", "--recurse-submodules", "--shallow-submodules", plugin.url, plugin.path }
-  print(vim.inspect(args))
-  vim.system(args, { text = true }, function(obj)
-    if obj.code == 0 then
-      callback(nil)
-    else
-      callback(obj.stderr)
-    end
+	local opts = { text = true }
+
+  vim.system(args, opts, function(obj)
+		callback(obj.code == 0 and nil or obj.stderr)
   end)
 end
 
@@ -21,67 +17,67 @@ end
 ---@param callback fun(err: string?): nil
 function git:fetch(plugin, callback)
   local args = { "git", "fetch", "origin" }
+	local opts = { cwd = plugin.path, text = true }
   if plugin.branch then
     table.insert(args, plugin.branch)
   elseif plugin.tag then
     table.insert(args, "--tags")
   end
-  vim.system(args, { text = true, cwd = plugin.path }, function(obj)
-    if obj.code == 0 then
-      callback(nil)
-    else
-      callback(obj.stderr)
-    end
+  vim.system(args, opts, function(obj)
+		callback(obj.code == 0 and nil or obj.stderr)
   end)
 end
 
 ---@param plugin Plugin
----@param calblack fun(err: string?, tags: string[]?): nil
-function git:list_new_tags(plugin, callback)
+---@param callback fun(err: string?, tags: string[]?): nil
+function git:list_tags(plugin, callback)
 	local args = { "git", "for-each-ref", "refs/tags", "--format=%(refname:short)", "--contains=HEAD", "--sort=-v:refname" }
-  local obj = vim.system(args, { cwd = plugin.path, text = true }, function(obj)
+	local opts = { cwd = plugin.path, text = true }
+
+  local obj = vim.system(args, opts, function(obj)
 		if obj.code == 0 then
-			callback(nil, vim.split(obj.stdout, '\n'))
+			callback(nil, vim.split(vim.trim(obj.stdout), '\n'))
 		else
 			callback(obj.stderr, nil)
 		end
 	end)
 end
 
-
 ---@param plugin Plugin
 ---@param callback fun(err: string?): nil
-function git:checkout(plugin, callback)
-  local args = { "git", "checkout" }
-	if plugin.tag then
-		self:list_new_tags(plugin, function(err, tags)
-			if err or not tags then callback(err) end
+---@param args string[]?
+function git:checkout(plugin, callback, args)
+	if args then
+		args = vim.list_extend({ "git", "checkout" }, args)
+		local opts = { cwd = plugin.path, text = true }
+
+		vim.system(args, opts, function(obj)
+			callback(obj.code == 0 and nil or obj.stderr)
+		end)	
+
+	elseif plugin.tag then
+		self:list_tags(plugin, vim.schedule_wrap(function(err, tags)
+			if err then
+				callback(err)
+			end
 			local range = vim.version.range(plugin.tag)
-			local tag = vim.iter(ipairs(tags)):map(function(_, tag)
-				return tag
-			end):find(function(tag)
+			local tag = vim.iter(tags):find(function(tag)
+				if tag == '' then return false end
 				return range:has(tag)
 			end)
-			table.insert(args, tag)
-			vim.system(args, { text = true, cwd = plugin.path }, function(obj)
-				if obj.code == 0 then
-					callback(nil)
-				else
-					callback(obj.stderr)
-				end
-			end)
-		end)
-	else
-		if plugin.branch then
-			table.insert(args, plugin.branch)
-		end
-		vim.system(args, { text = true, cwd = plugin.path }, function(obj)
-			if obj.code == 0 then
-				callback(nil)
+			if tag then
+				self:checkout(plugin, callback, { tag }) 
 			else
-				callback(obj.stderr)
+				callback("[Alpaca.nvim] (debug) Failure to find a new tag")
 			end
-		end)
+		end))
+
+	elseif plugin.branch then
+		self:checkout(plugin, callback, { plugin.branch })
+
+	else
+		self:checkout(plugin, callback, {})
+
 	end
 end
 
@@ -153,18 +149,18 @@ end
 
 ---@param callback fun(err: string?): nil
 function Plugin:install(callback)
-  git:clone(self, function(err)
+  git:clone(self, vim.schedule_wrap(function(err)
     if err then callback(err) end
-    git:checkout(self, callback)
-  end)
+    git:checkout(self, vim.schedule_wrap(callback))
+  end))
 end
 
 ---@param callback fun(err: string?): nil
 function Plugin:update(callback)
-  git:fetch(self, function(err)
+  git:fetch(self, vim.schedule_wrap(function(err)
     if err then callback(err) end
-    git:checkout(self, callback)
-  end)
+    git:checkout(self, vim.schedule_wrap(callback))
+  end))
 end
 
 function Plugin:clean()
@@ -251,7 +247,7 @@ function Alpaca:msg(total, operation)
 end
 
 function Alpaca:install_all()
-	vim.print("[Alpaca.nvim] (install)")
+	vim.print("[Alpaca.nvim] (install) [start]")
   local msg = self:msg(#self.to_install, "install")
   vim.iter(self.to_install):each(function(plugin)
     ---@cast plugin Plugin
@@ -265,7 +261,7 @@ function Alpaca:install_all()
 end
 
 function Alpaca:update_all()
-	vim.print("[Alpaca.nvim] (update)")
+	vim.print("[Alpaca.nvim] (update) [start]")
   local msg = self:msg(#self.plugins, "update")
   vim.iter(self.plugins):each(function(plugin)
     ---@cast plugin Plugin
@@ -276,7 +272,7 @@ function Alpaca:update_all()
 end
 
 function Alpaca:clean_all()
-	vim.print("[Alpaca.nvim] (clean)")
+	vim.print("[Alpaca.nvim] (clean) [start]")
   local path = vim.fn.stdpath("data") .. "/site/pack/alpaca"
   vim.iter(vim.fs.dir(path, { depth = 2 })):map(function(name, type)
     return type == "directory" and string.find(name, '/') and Plugin:from_installed(name)
