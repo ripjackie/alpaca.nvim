@@ -111,7 +111,7 @@ function Plugin:new(spec)
   plugin.ft = spec.ft and to_array(spec.ft)
 
   plugin.name = spec.as or vim.split(spec[1], "/")[2]
-  plugin.url = "http://github.com/" .. spec[1] .. ".gt"
+  plugin.url = "http://github.com/" .. spec[1] .. ".git"
   plugin.path = vim.fn.stdpath("data") .. "/site/pack/alpaca" .. (plugin.opt and "/opt/" or "/start/") .. plugin.name
 
   return plugin
