@@ -250,9 +250,9 @@ function Alpaca:update_all()
   local msg = self:msg(#self.plugins, "update")
   vim.iter(self.plugins):each(function(plugin)
     ---@cast plugin Plugin
-    plugin:update(function(err)
+    plugin:update(vim.schedule_wrap(function(err)
       msg(plugin.name, err)
-    end)
+    end))
   end)
 end
 
