@@ -4,23 +4,68 @@ local uv = vim.uv or vim.loop
 local git = {}
 
 ---@param plugin Plugin
----@param callback function?
+---@param callback fun(err: string?): nil
 function git:clone(plugin, callback)
   local args = { "git", "clone", "--depth=1", "--recurse-submodules", "--shallow-submodules", plugin.url, plugin.path }
+  print(vim.inspect(args))
   vim.system(args, { text = true }, function(obj)
-    print(vim.inspect(obj))
+    if obj.code == 0 then
+      callback(nil)
+    else
+      callback(obj.stderr)
+    end
   end)
 end
 
+---@param plugin Plugin
+---@param callback fun(err: string?): nil
 function git:fetch(plugin, callback)
   local args = { "git", "fetch", "origin" }
-  vim.system(args, { text = true }, function(obj)
+  if plugin.branch then
+    table.insert(args, plugin.branch)
+  elseif plugin.tag then
+    table.insert(args, "--tags")
+  end
+  vim.system(args, { text = true, cwd = plugin.path }, function(obj)
     print(vim.inspect(obj))
+    if obj.code == 0 then
+      callback(nil)
+    else
+      callback(obj.stderr)
+    end
   end)
 end
 
+---@param plugin Plugin
+function git:list_new_tags(plugin)
+  local args = { "git", "for-each-ref", "refs/tags", "--sort=-v:refname", "--contains=HEAD", "--format=%(refname:short)" }
+  local obj = vim.system(args, { cwd = plugin.path, text = true }):wait()
+  assert(obj.code == 0, "Failure to run git command: " .. obj.stderr)
+  return vim.split(obj.stdout, '\n')
+end
+
+
+---@param plugin Plugin
+---@param callback fun(err: string?): nil
 function git:checkout(plugin, callback)
   local args = { "git", "checkout" }
+  if plugin.branch then
+    table.insert(args, plugin.branch)
+  elseif plugin.tag then
+    local range = vim.version.range(plugin.tag)
+    local tags = self:list_new_tags(plugin)
+    local tag = vim.iter(ipairs(tags)):map(function(_, tag) return tag end):find(function(tag)
+      return range:has(tag)
+    end)
+    table.insert(args, tag)
+  end
+  vim.system(args, { text = true, cwd = plugin.path }, function(obj)
+    if obj.code == 0 then
+      callback(nil)
+    else
+      callback(obj.stderr)
+    end
+  end)
 end
 
 ---@class PluginSpec
@@ -66,7 +111,7 @@ function Plugin:new(spec)
   plugin.ft = spec.ft and to_array(spec.ft)
 
   plugin.name = spec.as or vim.split(spec[1], "/")[2]
-  plugin.url = "http://github.com/" .. spec[1]
+  plugin.url = "http://github.com/" .. spec[1] .. ".gt"
   plugin.path = vim.fn.stdpath("data") .. "/site/pack/alpaca" .. (plugin.opt and "/opt/" or "/start/") .. plugin.name
 
   return plugin
@@ -134,7 +179,7 @@ function Plugin:load()
         end
       })
     elseif self.cmd then
-      vim.print("[Alpaca.nvim] (debug) ["..self.name.."] Lazy loading via cmd not yet implemented! ( sorry! )")
+      vim.print("[Alpaca.nvim] (debug) ["..self.name.."] Lazy loading via cmd not yet implemented! ( sorry! ), loading plugin")
       vim.cmd.packadd(self.name)
       if vim.is_callable(self.config) then
         self.config()
@@ -162,75 +207,51 @@ function Plugin:installed()
   return uv.fs_stat(self.path) ~= nil
 end
 
----@return boolean
-function Plugin:updated()
-  vim.system({ "git", "fetch", "origin" }, { cwd = self.path }):wait()
-  if self.tag then
-    local obj = vim.system({
-      "git", "for-each-ref", "refs/tags", "--no-merged=HEAD", "--sort=-v:refname", "--format=%(refname:short)"
-    }, { cwd = self.path }):wait()
-    assert(obj.stderr == "", obj.stderr)
-    local range = vim.version.range(self.tag)
-    for _, ref in ipairs(vim.split(obj.stdout, '\n')) do
-      if range:has(ref) then
-        return false
-      end
-    end
-    return true
-  else
-    local obj = vim.system({
-      "git", "for-each-ref", "refs/heads", "--contains=HEAD", "--format=%(upstream:trackshort)"
-    }, { cwd = self.path }):wait()
-    assert(obj.stderr == "", obj.stderr)
-    if string.find(obj.stdout, '<') then
-      return false
-    else
-      return true
-    end
-  end
-end
-
 local Alpaca = {
   plugins = {},
   to_install = {}
 }
 
-function Alpaca:install_all()
-  local total = #self.to_install
+---@param total integer
+---@param operation string
+function Alpaca:msg(total, operation)
+  local fmt = "[Alpaca.nvim] (%d/%d) [%s] (%s) [%s] %s"
+  local fin = "[Alpaca.nvim] [%s] [finished]"
   local counter = 0
+  ---@param name string
+  ---@param err string?
+  return function(name, err)
+    counter = counter + 1
+    if err then
+      vim.print(string.format(fmt, counter, total, operation, name, "failure", err))
+    else
+      vim.print(string.format(fmt, counter, total, operation, name, "success", ""))
+    end
+    if counter == total then
+      vim.print(string.format(fin, operation))
+    end
+  end
+end
+
+function Alpaca:install_all()
+  local msg = self:msg(#self.to_install, "install")
   vim.iter(self.to_install):each(function(plugin)
     ---@cast plugin Plugin
-    plugin:install(function(err)
-      counter = counter + 1
-      if err then
-        print(string.format("[Alpaca.nvim] (%d/%d) [install] (%s) [failure] %s", counter, total, plugin.name, err))
-      else
-        print(string.format("[Alpaca.nvim] (%d/%d) [install] (%s) [success]", counter, total, plugin.name))
+    plugin:install(vim.schedule_wrap(function(err)
+      msg(plugin.name, err)
+      if not err then
         plugin:load()
       end
-      if counter == total then
-        print(string.format("[Alpaca.nvim] (install) [finished]"))
-      end
-    end)
+    end))
   end)
 end
 
 function Alpaca:update_all()
-  local total = #self.plugins
-  local counter = 0
+  local msg = self:msg(#self.plugins, "update")
   vim.iter(self.plugins):each(function(plugin)
     ---@cast plugin Plugin
     plugin:update(function(err)
-      counter = counter + 1
-      if err then
-        print(string.format("[Alpaca.nvim] (%d/%d) [update] (%s) [failure] %s", counter, total, plugin.name, err))
-      else
-        print(string.format("[Alpaca.nvim] (%d/%d) [update] (%s) [success]", counter, total, plugin.name))
-        plugin:load()
-      end
-      if counter == total then
-        print(string.format("[Alpaca.nvim] (update) [finished]"))
-      end
+      msg(plugin.name, err)
     end)
   end)
 end
@@ -244,15 +265,19 @@ function Alpaca:clean_all()
       return installed_plugin.name == plugin.name and installed_plugin.opt == plugin.opt
     end)
     if not loaded then
+      print("[Alpaca.nvim](debug) cleaning: ", installed_plugin.path)
       installed_plugin:clean()
     end
   end)
 end
 
 function Alpaca:create_autocmds()
-  vim.api.nvim_create_user_command("AlpacaUpdate", function(event)end, {})
-  vim.api.nvim_create_user_command("AlpacaUpdate", function(event)end, {})
-  vim.api.nvim_create_user_command("AlpacaClean", function(event)end, {})
+  vim.api.nvim_create_user_command("AlpacaUpdate", function()
+    Alpaca:update_all()
+  end, {})
+  vim.api.nvim_create_user_command("AlpacaClean", function()
+    Alpaca:clean_all()
+  end, {})
 end
 
 
@@ -260,6 +285,7 @@ local M = {}
 
 ---@param specs (string | PluginSpec)[]
 function M.setup(specs)
+  Alpaca:create_autocmds()
   vim.iter(ipairs(specs)):each(function(_, spec)
     local plugin = Plugin:new(spec)
     if not plugin:installed() then
