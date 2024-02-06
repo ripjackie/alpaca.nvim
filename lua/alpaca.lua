@@ -64,6 +64,8 @@ function Plugin:new(spec)
   return plugin
 end
 
+function Plugin
+
 ---@return boolean
 function Plugin:installed()
   return uv.fs_stat(self.path) ~= nil
@@ -104,22 +106,28 @@ local Alpaca = {
   to_remove = {}
 }
 
-function Alpaca:install()
-  local total = #self.to_install
-  local counter = 0
-  for _, plugin in ipairs(self.to_install) do
-    git:clone(plugin, function(ok)
-      assert(ok, "")
-      git:checkout(plugin, function(ok)
-        assert(ok, "")
-        counter = counter + 1
-        print(counter)
-      end)
-    end)
-  end
+---@param plugin Plugin
+---@param callback fun(err: string?): nil
+function Alpaca:install(plugin, callback)
+  git:clone(plugin, function(err)
+    if err then
+      callback(err)
+    else
+      git:checkout(plugin, callback)
+    end
+  end)
 end
 
-function Alpaca:update()
+---@param plugin Plugin
+---@param callback fun(err: string?): nil
+function Alpaca:update(plugin, callback)
+  git:fetch(plugin, function(err)
+    if err then
+      callback(err)
+    else
+      git:checkout(plugin, callback)
+    end
+  end)
 end
 
 function Alpaca:clean()
@@ -138,18 +146,23 @@ local M = {}
 
 ---@param specs (string | PluginSpec)[]
 function M.setup(specs)
-  for _, spec in ipairs(specs) do
+  local total = 0
+  local counter = 0
+  vim.iter(ipairs(specs)):each(function(_, spec)
     local plugin = Plugin:new(spec)
     if not plugin:installed() then
-      table.insert(Alpaca.to_install, plugin)
+      total = total + 1
+      Alpaca:install(plugin, function(err)
+        counter = counter + 1
+        if err then
+          print(string.format("[Alpaca.nvim] [%d/%d] [install] [%s] [FAIL] %s", counter, total, plugin.name, err))
+        else
+          print(string.format("[Alpaca.nvim] [%d/%d] [install] [%s]", counter, total, plugin.name))
+          plugin:load()
+        end
+      end)
     end
-
-    Alpaca:install()
-    Alpaca:load()
-
-  end
+  end)
 end
-
-
 
 return M
