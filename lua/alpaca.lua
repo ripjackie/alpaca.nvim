@@ -8,38 +8,50 @@ local utils = {}
 ---@param cmd string
 ---@param args string[]
 ---@param cwd string?
----@param callback fun(stdout: string?, stderr: string?): nil
+---@param callback fun(ok: boolean, stdout: string?, stderr: string?): nil
 function utils.spawn(cmd, args, cwd, callback)
   local stdio = { nil, uv.new_pipe(false), uv.new_pipe(false) }
+  local buffers = {"", ""}
+  local handle, pid
 
-  ---@param pipe table
-  ---@param callback fun(err: string?, data: string?): nil
-  local function read_pipe(pipe, callback)
-    local buffer = ""
-    pipe:read_start(function(err, data)
-      if err then
-        callback(err, nil)
-      elseif data then
-        buffer = buffer .. data
-      else
-        callback(nil, buffer)
-      end
-    end)
-  end
-
-  local function on_exit()
-    read_pipe(stdio[2], function(err, stdout)
-      if err then callback(nil, err) end
-      read_pipe(stdio[3], function(err, stderr)
-        if err then callback(nil, err) end
-        callback(stdout, stderr)
-      end)
-    end)
-  end
-
-  local handle, pid = uv.spawn(cmd, {
+  handle, pid = uv.spawn(cmd, {
     args = args, cwd = cwd, stdio = stdio
-  }, on_exit)
+  }, vim.schedule_wrap(function(code)
+    handle:close()
+    callback(code == 0, buffers[1], buffers[2])
+  end))
+
+  stdio[2]:read_start(function(err, data)
+    if err then
+      callback(false, nil, err)
+    elseif data then
+      buffers[1] = buffers[1] .. data
+    else
+      stdio[2]:close()
+    end
+  end)
+
+  stdio[3]:read_start(function(err, data)
+    if err then
+      callback(false, nil, err)
+    elseif data then
+      buffers[2] = buffers[2] .. data
+    else
+      stdio[3]:close()
+    end
+  end)
+end
+
+---@param plugin Plugin
+---@param callback fun(ok: boolean, stdout: string?, stderr: string?): nil
+function utils:git_clone(plugin, callback)
+  local args = { "clone", "--depth=1", "--recurse-submodules", "--shallow-submodules", plugin.url, plugin.path }
+  self.spawn("git", args, nil, callback)
+end
+
+function utils.log(level, message)
+  -- style is LEVEL | MESSAGE | TIMESTAMP
+  -- so ERROR | Failed to spawn Git Spawn with args { init, ... } | 2024-08-02 3:07:45PM
 end
 
 
@@ -65,6 +77,7 @@ function Plugin:new(spec)
   local plugin = {}
 
   plugin.name = spec.as or vim.split(spec[1], '/')[2]
+  plugin.url = "https://github.com/" .. spec[1] .. ".git"
   plugin.path = vim.fs.joinpath(AlpacaPath, (spec.opt and "opt" or "start"), plugin.name)
   plugin.installed = uv.fs_stat(plugin.path) and true or false
 
