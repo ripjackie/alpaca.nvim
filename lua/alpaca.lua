@@ -2,58 +2,25 @@ local vim = vim
 local uv = vim.uv or vim.loop
 
 AlpacaPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
-AlpacaLog  = vim.fn.stdpath("cache") .. "/alpaca.log"
 
-local utils = {}
+local Plugins = {
+  insert = function(self, plugin)
+    table.insert(self, plugin)
+  end
+}
 
----@param cmd string
----@param args string[]
----@param cwd string?
----@param callback fun(ok: boolean, stdout: string?, stderr: string?): nil
-function utils.spawn(cmd, args, cwd, callback)
-  local stdio = { nil, uv.new_pipe(false), uv.new_pipe(false) }
-  local buffers = {"", ""}
-  local handle, pid
+local git = {}
 
-  handle, pid = uv.spawn(cmd, {
-    args = args, cwd = cwd, stdio = stdio
-  }, vim.schedule_wrap(function(code)
-    handle:close()
-    callback(code == 0, buffers[1], buffers[2])
-  end))
-
-  stdio[2]:read_start(function(err, data)
-    if err then
-      callback(false, nil, err)
-    elseif data then
-      buffers[1] = buffers[1] .. data
-    else
-      stdio[2]:close()
-    end
-  end)
-
-  stdio[3]:read_start(function(err, data)
-    if err then
-      callback(false, nil, err)
-    elseif data then
-      buffers[2] = buffers[2] .. data
-    else
-      stdio[3]:close()
-    end
-  end)
+function git:init(plugin)
+  local obj = vim.system({"git", "init", plugin.path}, { text = true }):wait()
+  assert(obj.code == 0, "ERROR") -- TODO
+  local obj = vim.system({"git", "remote", "add", "origin", "--no-tags" plugin.url}):wait()
+  assert(obj.code == 0, "ERROR") -- TODO
 end
 
----@param plugin Plugin
----@param callback fun(ok: boolean, stdout: string?, stderr: string?): nil
-function utils:git_clone(plugin, callback)
-  local args = { "clone", "--depth=1", "--recurse-submodules", "--shallow-submodules", plugin.url, plugin.path }
-  self.spawn("git", args, nil, callback)
-end
-
-function utils.log(level, message)
-  local file = assert(io.open(AlpacaLog, 'w'))
-  file:write(string.format("%s | %s | %s", string.upper(level), message, os.date('%c', os.time())))
-  file:close()
+function git:ls_remote(plugin)
+  -- git ls-remote --refs --tags  --quiet --sort=-v:refname origin
+  -- git ls-remote --refs --heads --quiet origin
 end
 
 ---@class PluginSpec
@@ -105,31 +72,14 @@ function Plugin:new(spec)
   return setmetatable(plugin, self)
 end
 
-function Plugin:check_updates(callback)
-  if self.tag then
-    -- get current tag ( git describe --tags --exact-match )
-    -- get remote tags ( git ls-remote --refs --tags --sort=-v:refname --quiet origin )
-    -- if there is a newer remote tag that follows the plugin.tag semver, return true
-    print()
-  elseif self.branch then
-    -- get current head ( git rev-parse [HEAD?] )
-    -- get current symbolic-ref (may not be needed) ( git symbolic-ref HEAD )
-    -- get current remote head ( git ls-remote --refs --heads --quiet plugin.branch ( symbolic-ref? ) )
-    -- if remote head is different, return true
-    print()
-  else
-    -- get current head ( git rev-parse HEAD )
-    -- get current head ( git rev-parse [HEAD?] )
-    -- get current symbolic-ref (may not be needed) ( git symbolic-ref HEAD )
-    -- get current remote head ( git ls-remote --refs --heads --quiet plugin.branch ( symbolic-ref? ) )
-    -- if remote head is different, return true
-    print()
-  end
-end
-
 local M = {}
 
 M.tests = {
+  setup_once = function()
+    M.setup({
+      { "sainnhe/everforest" }
+    })
+  end,
   setup = function()
     M.setup({
       { "sainnhe/everforest" },
@@ -186,9 +136,23 @@ function M.setup(specs)
     local plugin = Plugin:new(spec)
     vim.print(plugin)
     if not plugin.installed then
-
+      git:clone(plugin)
+      git:checkout(plugin)
     end
+    Plugins:insert(plugin)
   end
+  print(vim.inspect(Plugins))
 end
+
+vim.api.nvim_create_user_command("AlpacaUpdate", function()
+  for _, plugin in ipairs(Plugins) do
+    git:fetch(plugin)
+    git:checkout(plugin)
+  end
+end, {})
+
+vim.api.nvim_create_user_command("AlpacaClean", function()
+  print("not implemented")
+end, {})
 
 return M
