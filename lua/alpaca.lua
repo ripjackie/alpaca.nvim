@@ -2,85 +2,71 @@ local vim = vim
 local uv = vim.uv or vim.loop
 
 AlpacaPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
-
-local Plugins = {
-  insert = function(self, plugin)
-    table.insert(self, plugin)
-  end
-}
+require("plugin")
 
 local git = {}
 
-function git:init(plugin)
-  local obj = vim.system({"git", "init", plugin.path}, { text = true }):wait()
-  assert(obj.code == 0, "ERROR") -- TODO
-  local obj = vim.system({"git", "remote", "add", "origin", "--no-tags" plugin.url}):wait()
-  assert(obj.code == 0, "ERROR") -- TODO
+---@param plugin Plugin
+---@param callback fun(err: string?): nil
+function git:clone(plugin, callback)
+  local args = { "git", "clone", "--depth=1", "--recurse-submodules", "--shallow-submodules", "--no-checkout", plugin.url, plugin.path }
+  
 end
 
-function git:ls_remote(plugin)
-  -- git ls-remote --refs --tags  --quiet --sort=-v:refname origin
-  -- git ls-remote --refs --heads --quiet origin
+---@param plugin Plugin
+---@param callback fun(err: string?): nil
+function git:checkout_tag(plugin, callback)
 end
 
----@class PluginSpec
----@field [1] string plugin location (this only allows for git.)
----@field as string? plugin alias
----@field config function? plugin config to run on load
----@field build (function | string)? object to run after install / update
----@field branch string? branch to follow
----@field tag string? tag semver to follow
----@field event (string|string[])? lazy load on event(s)
----@field cmd (string|string[])? lazy load on user cmd(s)
----@field ft (string|string[])? lazy load on filetype(s)
+---@param plugin Plugin
+---@param callback fun(err: string?): nil
+function git:checkout_branch(plugin, callback)
+end
 
+local Alpaca = {
+  loaded = {},
+  installed = {}
+}
 
----@class Plugin
----@field name string name / alias for plugin internally
----@field path string path plugin is installed to
----@field installed boolean if plugin is currently installed or not
----@field config function? function to run on plugin load
----@field build (function | string)? command to run after install / update
----@field branch string? branch to follow
----@field tag string? tag semver to follow
----@field event string[]? lazy load on events
----@field cmd string[]? lazy load on user cmds
----@field ft string[]? lazy load on filetypes
-local Plugin = {}
+function Alpaca:install()
+  print("Alpaca Install!")
+  for _, plugin in ipairs(self.loaded) do
+    ---@cast plugin Plugin
+    if not plugin.installed then
+      git:clone(plugin, function(err)
+        assert(not err, err)
+        if plugin.tag then
+          git:checkout_tag(plugin, function(err)
+          end)
+        else
+          git:checkout_branch(plugin, function(err)
+          end)
+        end
+      end)
+  end
+end
 
----@param spec PluginSpec
-function Plugin:new(spec)
-  ---@class Plugin
-  local plugin = {}
+function Alpaca:update()
+  print("Alpaca Update!")
+end
 
-  plugin.name = spec.as or vim.split(spec[1], '/')[2]
-  plugin.url = "https://github.com/" .. spec[1] .. ".git"
-  plugin.path = vim.fs.joinpath(AlpacaPath, ((spec.event or spec.cmd or spec.ft) and "opt" or "start"), plugin.name)
-  plugin.installed = uv.fs_stat(plugin.path) and true or false
+function Alpaca:load()
+  print("Alpaca Load!")
+end
 
-  plugin.branch = spec.branch
-  plugin.tag = spec.tag
-
-  plugin.config = spec.config
-  plugin.build = spec.build
-
-  plugin.event = spec.event and type(spec.event) ~= "table" and {spec.event} or spec.event --[=[@as string[]?]=]
-  plugin.cmd = spec.cmd and type(spec.cmd) ~= "table" and {spec.cmd} or spec.cmd --[=[@as string[]?]=]
-  plugin.ft = spec.ft and type(spec.ft) ~= "table" and {spec.ft} or spec.ft --[=[@as string[]?]=]
-
-  self.__index = self
-  return setmetatable(plugin, self)
+function Alpaca:clean()
+  print("Alpaca Clean!")
 end
 
 local M = {}
 
 M.tests = {
-  setup_once = function()
+  setup = function()
     M.setup({
       { "sainnhe/everforest" }
     })
   end,
-  setup = function()
+  setup_many = function()
     M.setup({
       { "sainnhe/everforest" },
       {
@@ -133,22 +119,12 @@ M.tests = {
 function M.setup(specs)
   for _, spec in ipairs(specs) do
     spec = type(spec) ~= "table" and {spec} or spec --[[@as PluginSpec]]
-    local plugin = Plugin:new(spec)
-    vim.print(plugin)
-    if not plugin.installed then
-      git:clone(plugin)
-      git:checkout(plugin)
-    end
-    Plugins:insert(plugin)
+    table.insert(Alpaca.loaded, Plugin:new(spec))
   end
-  print(vim.inspect(Plugins))
 end
 
 vim.api.nvim_create_user_command("AlpacaUpdate", function()
-  for _, plugin in ipairs(Plugins) do
-    git:fetch(plugin)
-    git:checkout(plugin)
-  end
+  print("not implemented")
 end, {})
 
 vim.api.nvim_create_user_command("AlpacaClean", function()
