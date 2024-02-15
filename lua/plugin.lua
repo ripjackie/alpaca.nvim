@@ -14,7 +14,6 @@ local uv = vim.uv or vim.loop
 ---@class Plugin
 ---@field name string name / alias for plugin internally
 ---@field path string path plugin is installed to
----@field installed boolean if plugin is currently installed or not
 ---@field config function? function to run on plugin load
 ---@field build (function | string)? command to run after install / update
 ---@field branch string? branch to follow
@@ -32,7 +31,6 @@ function Plugin:new(spec)
   plugin.name = spec.as or vim.split(spec[1], '/')[2]
   plugin.url = "https://github.com/" .. spec[1] .. ".git"
   plugin.path = vim.fs.joinpath(AlpacaPath, ((spec.event or spec.cmd or spec.ft) and "opt" or "start"), plugin.name)
-  plugin.installed = uv.fs_stat(plugin.path) and true or false
 
   plugin.branch = spec.branch
   plugin.tag = spec.tag
@@ -46,4 +44,8 @@ function Plugin:new(spec)
 
   self.__index = self
   return setmetatable(plugin, self)
+end
+
+function Plugin:is_installed()
+  return uv.fs_stat(self.path) and true or false
 end

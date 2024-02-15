@@ -9,18 +9,82 @@ local git = {}
 ---@param plugin Plugin
 ---@param callback fun(err: string?): nil
 function git:clone(plugin, callback)
-  local args = { "git", "clone", "--depth=1", "--recurse-submodules", "--shallow-submodules", "--no-checkout", plugin.url, plugin.path }
-  
+  local args = { "git", "clone", "--recurse-submodules", "--no-checkout", plugin.url, plugin.path }
+  vim.system(args, { text = true }, function(obj)
+    if obj.code == 0 then
+      callback(nil)
+    else
+      callback(obj.stderr)
+    end
+  end)
+end
+
+---@param plugin Plugin
+---@param callback fun(err: string?, tags: string?): nil
+function git:tag(plugin, callback)
+  local args = { "git", "tag", "--sort=-v:refname" }
+  vim.system(args, { text = true, cwd = plugin.path }, function(obj)
+    if obj.code ~= 0 then
+      callback(obj.stderr, nil)
+    else
+      callback(nil, obj.stdout)
+    end
+  end)
 end
 
 ---@param plugin Plugin
 ---@param callback fun(err: string?): nil
 function git:checkout_tag(plugin, callback)
+  local range = vim.version.range(plugin.tag)
+  self:tag(plugin, function(err, tags)
+    if err then callback(err) end
+    for tag in vim.gsplit(tags, '\n', { trimempty = true }) do
+      if range:has(tag) then
+        local args = { "git", "checkout", tag }
+        vim.system(args, { text = true, cwd = plugin.path }, function(obj)
+          if obj.code ~= 0 then
+            callback(obj.stderr)
+          else
+            callback(nil)
+          end
+        end)
+      end
+    end
+  end)
 end
 
 ---@param plugin Plugin
 ---@param callback fun(err: string?): nil
 function git:checkout_branch(plugin, callback)
+  ---@param cb fun(err: string?, out: string?): nil
+  local function get_branch(cb)
+    if plugin.branch then
+      cb(nil, plugin.branch)
+    else
+      local args = { "git", "symbolic-ref", "HEAD", "--short" }
+      local opts = { text = true, cwd = plugin.path }
+      vim.system(args, opts, function(obj)
+        if obj.code == 0 then
+          cb(nil, vim.trim(obj.stdout))
+        else
+          cb(obj.stderr, nil)
+        end
+      end)
+    end
+  end
+  get_branch(function(err, branch)
+    assert(not err, err)
+    local args = { "git", "checkout", branch }
+    local opts = { text = true, cwd = plugin.path }
+    vim.system(args, opts, function(obj)
+      if obj.code == 0 then
+        callback(nil)
+      else
+        print("Checking Out Branch " .. branch)
+        callback(obj.stderr)
+      end
+    end)
+  end)
 end
 
 local Alpaca = {
@@ -29,20 +93,24 @@ local Alpaca = {
 }
 
 function Alpaca:install()
-  print("Alpaca Install!")
   for _, plugin in ipairs(self.loaded) do
-    ---@cast plugin Plugin
-    if not plugin.installed then
+    if not plugin:is_installed() then
+      vim.print("Installing " .. plugin.name)
       git:clone(plugin, function(err)
         assert(not err, err)
         if plugin.tag then
           git:checkout_tag(plugin, function(err)
+            assert(not err, err)
+            vim.print("Finished Installing " .. plugin.name)
           end)
         else
           git:checkout_branch(plugin, function(err)
+            assert(not err, err)
+            vim.print("Finished Installing " .. plugin.name)
           end)
         end
       end)
+    end
   end
 end
 
@@ -63,7 +131,11 @@ local M = {}
 M.tests = {
   setup = function()
     M.setup({
-      { "sainnhe/everforest" }
+      { "sainnhe/everforest" },
+      {
+        "lukas-reineke/indent-blankline.nvim",
+        tag = "v3.5.x"
+      }
     })
   end,
   setup_many = function()
@@ -121,6 +193,7 @@ function M.setup(specs)
     spec = type(spec) ~= "table" and {spec} or spec --[[@as PluginSpec]]
     table.insert(Alpaca.loaded, Plugin:new(spec))
   end
+  Alpaca:install()
 end
 
 vim.api.nvim_create_user_command("AlpacaUpdate", function()
