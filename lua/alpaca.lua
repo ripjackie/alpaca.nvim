@@ -6,77 +6,96 @@ require("plugin")
 
 local git = {}
 
+---@param args string[]
+---@param cwd string?
+---@param callback fun(stderr: string?, stdout: string?): nil
+function git:spawn(args, cwd, callback)
+  vim.system(vim.list_extend({"git"}, args), { text = true, cwd = cwd }, function(obj)
+    if obj.code == 0 then
+      return callback(nil, obj.stdout)
+    else
+      return callback(obj.stderr, nil)
+    end
+  end)
+end
+
+---@param plugin Plugin
+---@param callback fun(err: string?, tag: string?): nil
+function git:find_newest_tag(plugin, callback)
+  local args = {
+    "for-each-ref", "refs/tags", "--sort=-v:refname", "--format=%(refname:short)"
+  }
+  self:spawn(args, plugin.path, function(stderr, stdout)
+    if stderr then
+      return callback(stderr, nil)
+    else
+      for tag in vim.gsplit(stdout, '\n', {trimempty = true}) do
+        if plugin.range:has(tag) then
+          return callback(nil, tag)
+        end
+      end
+      return callback("No Valid Tag Was Found", nil)
+    end
+  end)
+end
+
+---@param plugin Plugin
+---@param callback fun(err: string?, branch: string?): nil
+function git:find_head_ref(plugin, callback)
+  local args = {
+    "symbolic-ref", "HEAD", "--short"
+  }
+  self:spawn(args, plugin.path, function(stderr, stdout)
+    if stderr then
+      return callback(stderr, nil)
+    else
+      return callback(nil, vim.trim(stdout))
+    end
+  end)
+end
+
+
 ---@param plugin Plugin
 ---@param callback fun(err: string?): nil
 function git:clone(plugin, callback)
-  local args = { "git", "clone", "--recurse-submodules", "--no-checkout", plugin.url, plugin.path }
-  local opts = { text = true }
-  vim.system(args, opts, function(obj)
-    if obj.code == 0 then
-      callback(nil)
-    else
-      callback(obj.stderr)
-    end
-  end)
-end
-
----@param plugin Plugin
----@param callback fun(err: string?, tags: string?): nil
-function git:list_tags(plugin, callback)
-  local args = { "git", "tag", "--sort=-v:refname" }
-  local opts = { text = true, cwd = plugin.path }
-  vim.system(args, opts, function(obj)
-    if obj.code ~= 0 then
-      callback(obj.stderr, nil)
-    else
-      callback(nil, vim.gsplit(obj.stdout, '\n', { trimempty = true }))
-    end
+  local args = {
+    "clone", "--recurse-submodules", "--no-checkout", plugin.url, plugin.path
+}
+  self:spawn(args, nil, function(stderr)
+    return callback(stderr)
   end)
 end
 
 ---@param plugin Plugin
 ---@param callback fun(err: string?): nil
-function git:checkout_tag(plugin, callback)
-  self:list_tags(plugin, function(err, tags)
-    if err then callback(err) end
-
-    local range = vim.version.range(plugin.tag)
-
-    local new_tag
-    for tag in tags do
-      if range:has(tag) then
-        new_tag = tag
-      end
-    end
-    assert(new_tag, "ERR MSG") -- TODO
-
-    local args = { "git", "checkout", new_tag }
-    local opts = { text = true, cwd = plugin.path }
-    vim.system(args, opts, function(obj)
-      if obj.code ~= 0 then
-        callback(obj.stderr)
+---@param refspec string?
+function git:checkout(plugin, callback, refspec)
+  if refspec then
+    local args = { "checkout", refspec }
+    return self:spawn(args, plugin.path, callback)
+  elseif plugin.tag then
+    self:find_newest_tag(plugin, function(err, tag)
+      if err then
+        return callback(err)
+      elseif not tag then
+        return callback("No Valid Tag Found")
       else
-        callback(nil)
+        return self:checkout(plugin, callback, tag)
       end
     end)
-  end)
+  elseif plugin.branch then
+    return self:checkout(plugin, callback, plugin.branch)
+  else
+    self:find_head_ref(plugin, function(err, branch)
+      if err then
+        return callback(err)
+      else
+        return self:checkout(plugin, callback, branch)
+      end
+    end)
+  end
 end
 
----@param plugin Plugin
----@param callback fun(err: string?): nil
-function git:checkout_branch(plugin, callback)
-  local args = { "git", "checkout", plugin.branch }
-  local opts = { text = true, cwd = plugin.path }
-  print(vim.inspect(args))
-  vim.system(args, opts, function(obj)
-    if obj.code ~= 0 then
-      vim.print(obj)
-      callback(obj.stderr)
-    else
-      callback(nil)
-    end
-  end)
-end
 
 local Alpaca = {
   loaded = {},
@@ -89,17 +108,10 @@ function Alpaca:install()
       vim.print("Installing " .. plugin.name)
       git:clone(plugin, function(err)
         assert(not err, err)
-        if plugin.tag then
-          git:checkout_tag(plugin, function(err)
-            assert(not err, err)
-            vim.print("Finished Installing " .. plugin.name)
-          end)
-        else
-          git:checkout_branch(plugin, function(err)
-            assert(not err, err)
-            vim.print("Finished Installing " .. plugin.name)
-          end)
-        end
+        git:checkout(plugin, function(err)
+          assert(not err, err)
+          vim.print("Finished Installing " .. plugin.name)
+        end)
       end)
     end
   end

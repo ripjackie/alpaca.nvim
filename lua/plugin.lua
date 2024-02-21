@@ -21,6 +21,7 @@ local uv = vim.uv or vim.loop
 ---@field event string[]? lazy load on events
 ---@field cmd string[]? lazy load on user cmds
 ---@field ft string[]? lazy load on filetypes
+---@field range table? vim.version range object if tag is present
 Plugin = {}
 
 ---@param spec PluginSpec
@@ -34,6 +35,7 @@ function Plugin:new(spec)
 
   plugin.branch = spec.branch
   plugin.tag = spec.tag
+  plugin.range = spec.tag and vim.version.range(spec.tag)
 
   plugin.config = spec.config
   plugin.build = spec.build
