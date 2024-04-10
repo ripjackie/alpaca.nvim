@@ -92,7 +92,7 @@ function M.setup(specs)
                 plugin:do_build()
                 plugin:load()
             else
-                vim.notify(("Failed to Install: %s"):format(plugin.name))
+                vim.notify(("Failed to Install: %s, %s"):format(plugin.name, err))
             end
         else
             plugin:load()
