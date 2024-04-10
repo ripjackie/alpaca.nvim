@@ -40,7 +40,7 @@ function Plugin:install()
         "--depth=1", "--recurse-submodules", "--shallow-submodules",
         self.url, self.path
     }, { text = true }):wait()
-    if obj.code == 0 then
+    if obj.code != 0 then
         return obj.stderr
     else
         return
