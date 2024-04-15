@@ -3,6 +3,7 @@ local git = require("git")
 local Plugin = require("plugin")
 
 AlpacaPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
+AlpacaPlugins = {}
 
 local installed = Plugin.list_installed()
 
@@ -29,7 +30,7 @@ function M.setup(specs)
     specs = { specs, "table" }
   })
 
-  for i, spec in ipairs(specs) do
+  for _, spec in ipairs(specs) do
     if type(spec) == "string" then
       spec = { spec }
     end
@@ -37,33 +38,22 @@ function M.setup(specs)
     local local_plugin = installed[plugin.repo]
 
     if local_plugin == nil then
+        plugin:install()
+    elseif local_plugin.name ~= plugin.name or local_plugin.opt ~= plugin.opt then
+        local local_opt_name = local_plugin.opt and "opt" or "start"
+        local config_opt_name = plugin.opt and "opt" or "start"
+        vim.notify(("[Alpaca.nvim] Moving %s/%s -> %s/%s"):format(local_opt_name, local_plugin.name, config_opt_name, plugin.name))
+        uv.fs_rename(local_plugin.path, plugin.path)
+    else
+        plugin:check_for_updates()
+    end
+
+    if plugin.opt then
+        plugin:lazy_load()
+    else
+        plugin:do_config()
     end
   end
-
-  vim.iter(specs):map(function(spec)
-    return Plugin:from_spec(spec)
-  end):each(function(plugin)
-    local local_plugin = installed[plugin.repo]
-    print(plugin.name)
-    if not local_plugin then
-      plugin:install()
-    else
-      if local_plugin.name ~= plugin.name then
-        -- rename local plugin dir
-        vim.notify(("[Alpaca.nvim] Renaming %s -> %s"):format(local_plugin.name, plugin.name))
-        uv.fs_rename(local_plugin.path, plugin.path)
-        local_plugin.name = plugin.name
-      end
-      if local_plugin.opt ~= plugin.opt then
-        -- move start <-> opt
-        vim.notify(("[Alpaca.nvim] %s lazy-load for %s"):format(plugin.opt and "enabling" or "disabling", plugin.name))
-        uv.fs_rename(local_plugin.path, plugin.path)
-        local_plugin.opt = plugin.opt
-      end
-      plugin:get_updates(local_plugin.version)
-      plugin:load()
-    end
-  end)
 end
 
 return M
