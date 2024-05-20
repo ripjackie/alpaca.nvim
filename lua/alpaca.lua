@@ -5,71 +5,89 @@ local DefaultOpts = {
   install_on_start = true
 }
 
-local util = {
-  to_table = function(value)
-    return type(value) ~= "table" and {value} or value
-  end,
-  log = function(msg, level)
-    vim.schedule(function()
-      vim.notify("[Alpaca.nvim] " .. msg, level)
-    end)
-  end
-}
+local util = {}
+function util.to_table(value)
+  return type(value) ~= "table" and {value} or value
+end
+
+function util.log(msg, level)
+  vim.schedule(function()
+    vim.notify("[Alpaca.nvim] " .. msg, level)
+  end)
+end
 
 
-local git = {
-  run = function (cmd, path, callback)
-    return vim.system(vim.list_extend({"git"}, cmd), { cwd = path and vim.fs.normalize(path) }, function(obj)
-      local ok = obj.code == 0
-      return callback(ok, ok and obj.stdout or obj.stderr)
-    end)
-  end,
+local git = {}
+function git.run(cmd, path, callback)
+  local handle
+  local stdio = { nil, uv.new_pipe(false), uv.new_pipe(false) }
+  local bufs = { nil, "", "" }
 
-  corun = function (self, cmd, path)
-    local coro = coroutine.running()
-    self.run(cmd, path, function(ok, out)
-      coroutine.resume(coro, ok, out)
-    end)
-    return coroutine.yield()
-  end,
-
-  clone = function (self, url, path, branch, callback)
-    return self.run({
-      "clone", "--depth=1", "--shallow-submodules", "--recurse-submodules",
-      branch and "--branch=" .. branch, url, path
-    }, nil, callback)
-  end,
-
-  ls_remote_tags = function (self, spec)
-    local range = vim.version.range(spec.tag)
-    local ok, out = self:corun({
-      "ls-remote", "--tags", "--sort=-v:refname", spec.url, "*" .. tostring(range.from):gsub("0", "*")
-    }, nil) 
-    if ok then
-      for tag in out:gmatch("%w+\trefs/tags/(%C+)\n") do
-        if range:has(tag) then
-          return ok, tag
-        end
+  local function read_into(index)
+    return function (err, out)
+      if err then
+        return callback(false, err)
+      elseif out then
+        bufs[index] = bufs[index] .. out
+      else
+        stdio[index]:read_stop()
+        stdio[index]:close()
       end
-      return false, ("failed to find tag for plugin %s in range %s - %s"):format(spec.name, tostring(range.from), tostring(range.to))
-    else
-      return ok, out
     end
-  end,
-
-  get_url = function (self, path)
-    return self:corun({ "ls-remote", "--get-url" }, path)
-  end,
-
-  rev_parse = function (self, path)
-    return self:corun({ "rev-parse", "HEAD" }, path)
-  end,
-
-  describe = function (self, path)
-    return self:corun({ "describe", "--all" }, path)
   end
 
-}
+  handle = uv.spawn("git", { args = cmd, cwd = path, stdio = stdio }, function (code)
+    handle:close()
+    return callback(code == 0, code == 0 and bufs[2] or bufs[3])
+  end)
+
+  stdio[2]:read_start(read_into(2))
+  stdio[3]:read_start(read_into(3))
+end
+
+function git.corun(cmd, path)
+  local coro = coroutine.running()
+  git.run(cmd, path, function(ok, out)
+    coroutine.resume(coro, ok, out)
+  end)
+  return coroutine.yield()
+end
+
+function git.clone(spec, callback)
+  return git.run({
+    "clone", "--depth=1", "--shallow-submodules", "--recurse-submodules",
+    branch and "--branch=" .. branch, url, path
+  }, nil, callback)
+end
+
+function git.ls_remote_tags(spec)
+  local range = vim.version.range(spec.tag)
+  local ok, out = git.corun({
+    "ls-remote", "--tags", "--sort=-v:refname", spec.url, "*" .. tostring(range.from):gsub("0", "*")
+  }, nil) 
+  if ok then
+    for tag in out:gmatch("%w+\trefs/tags/(%C+)\n") do
+      if range:has(tag) then
+        return ok, tag
+      end
+    end
+    return false, ("failed to find tag for plugin %s in range %s - %s"):format(spec.name, tostring(range.from), tostring(range.to))
+  else
+    return ok, out
+  end
+end
+
+function git.get_url(path)
+  return git.corun({ "ls-remote", "--get-url" }, path)
+end
+
+function git.rev_parse(path)
+  return git.corun({ "rev-parse", "HEAD" }, path)
+end
+
+function git.describe(path)
+  return git.corun({ "describe", "--all" }, path)
+end
 
 
 local function parse_plugins()
@@ -79,9 +97,9 @@ local function parse_plugins()
       local opttype, plugname = filename:match("(%C+)/(%C+)")
       local fullpath = ("%s/%s"):format(PluginPath, filename)
 
-      local _, remote = git:get_url(fullpath)
-      local _, commit = git:rev_parse(fullpath)
-      local _, ref = git:describe(fullpath)
+      local _, remote = git.get_url(fullpath)
+      local _, commit = git.rev_parse(fullpath)
+      local _, ref = git.describe(fullpath)
 
       local repo = remote:match("https://github.com/(%C+/%C+).git")
 
@@ -110,14 +128,14 @@ end
 
 local function install_spec(spec, callback)
   if spec.tag then
-    local ok, out = git:ls_remote_tags(spec)
+    local ok, out = git.ls_remote_tags(spec)
     if ok then 
-      return git:clone(spec.url, spec.path, out, callback)
+      return git.clone(spec.url, spec.path, out, callback)
     else
       return callback(ok, out)
     end
   else
-    return git:clone(spec.url, spec.path, spec.branch, callback)
+    return git.clone(spec.url, spec.path, spec.branch, callback)
   end
 end
 
@@ -127,7 +145,9 @@ local function load_spec(spec)
       vim.schedule(spec.config)
     end
   end
+
   if spec.event or spec.cmd or spec.ft then
+    local alpaca_group = vim.api.nvim_create_augroup("AlpacaOptLoad")
     if spec.event then
       spec.event = util.to_table(spec.event)
       vim.api.nvim_create_autocmd(spec.event, {
