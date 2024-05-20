@@ -1,9 +1,13 @@
 local uv = vim.uv or vim.loop
+local git = require("git")
 
 local PluginPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
 local DefaultOpts = {
   install_on_start = true
 }
+
+local Plugins = {}
+
 
 local util = {}
 function util.to_table(value)
@@ -17,78 +21,16 @@ function util.log(msg, level)
 end
 
 
-local git = {}
-function git.run(cmd, path, callback)
-  local handle
-  local stdio = { nil, uv.new_pipe(false), uv.new_pipe(false) }
-  local bufs = { nil, "", "" }
-
-  local function read_into(index)
-    return function (err, out)
-      if err then
-        return callback(false, err)
-      elseif out then
-        bufs[index] = bufs[index] .. out
-      else
-        stdio[index]:read_stop()
-        stdio[index]:close()
-      end
-    end
+local function load_commands(opts)
+  if not opts.install_on_start then
+    -- create AlpacaInstall
+    vim.api.nvim_create_user_command("AlpacaInstall", function ()
+      install_all()
+    end)
   end
-
-  handle = uv.spawn("git", { args = cmd, cwd = path, stdio = stdio }, function (code)
-    handle:close()
-    return callback(code == 0, code == 0 and bufs[2] or bufs[3])
-  end)
-
-  stdio[2]:read_start(read_into(2))
-  stdio[3]:read_start(read_into(3))
+  -- create AlpacaUpdate
+  -- create AlpacaClean
 end
-
-function git.corun(cmd, path)
-  local coro = coroutine.running()
-  git.run(cmd, path, function(ok, out)
-    coroutine.resume(coro, ok, out)
-  end)
-  return coroutine.yield()
-end
-
-function git.clone(spec, callback)
-  return git.run({
-    "clone", "--depth=1", "--shallow-submodules", "--recurse-submodules",
-    branch and "--branch=" .. branch, url, path
-  }, nil, callback)
-end
-
-function git.ls_remote_tags(spec)
-  local range = vim.version.range(spec.tag)
-  local ok, out = git.corun({
-    "ls-remote", "--tags", "--sort=-v:refname", spec.url, "*" .. tostring(range.from):gsub("0", "*")
-  }, nil) 
-  if ok then
-    for tag in out:gmatch("%w+\trefs/tags/(%C+)\n") do
-      if range:has(tag) then
-        return ok, tag
-      end
-    end
-    return false, ("failed to find tag for plugin %s in range %s - %s"):format(spec.name, tostring(range.from), tostring(range.to))
-  else
-    return ok, out
-  end
-end
-
-function git.get_url(path)
-  return git.corun({ "ls-remote", "--get-url" }, path)
-end
-
-function git.rev_parse(path)
-  return git.corun({ "rev-parse", "HEAD" }, path)
-end
-
-function git.describe(path)
-  return git.corun({ "describe", "--all" }, path)
-end
-
 
 local function parse_plugins()
   local plugins = {}
@@ -126,16 +68,51 @@ local function parse_spec(spec)
   return spec
 end
 
+local function install_all()
+  if #to_install > 0 then
+    local total = #to_install
+    local curr = 0
+    local errors = {}
+    util.log(("[%d/%d] Installing Packages"):format(curr, total))
+    for _, spec in ipairs(to_install) do
+      install_spec(spec, function(ok, out)
+        curr = curr + 1
+        if ok then
+          util.log(("[%d/%d] Install Success: %s"):format(curr, total, spec.name))
+          load_spec(spec)
+        else
+          util.log(("[%d/%d] Install Failure: %s"):format(curr, total, spec.name))
+          table.insert(errors, { name = spec.name, err = out })
+          print(vim.inspect(errors))
+        end
+        if curr == total then
+          if #errors > 0 then
+            util.log("Errors: " .. vim.inspect(errors))
+          else
+            util.log("Install Success")
+          end
+        end
+      end)
+    end
+  end
+end
+
+local function update_all()
+end
+
+local function clean_all()
+end
+
 local function install_spec(spec, callback)
   if spec.tag then
     local ok, out = git.ls_remote_tags(spec)
     if ok then 
-      return git.clone(spec.url, spec.path, out, callback)
+      return git.clone(spec, out, callback)
     else
       return callback(ok, out)
     end
   else
-    return git.clone(spec.url, spec.path, spec.branch, callback)
+    return git.clone(spec, spec.branch, callback)
   end
 end
 
@@ -178,16 +155,73 @@ local function load_spec(spec)
   print("load " .. spec[1])
 end
 
+-- dev notes
+-- i need to establish a method of doing all this, easily.
+-- 1. wrap everything around a plugins table. (save this in a file?)
+-- 2. go through the specs table to build the plugins[repo].spec tables
+-- 3. go through the install directory to build the plugins[repo].install tables
+local PluginPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
+
+local DefaultOpts = {
+  install_on_start = true
+}
+
+
+function setup_v2(specs, opts)
+  vim.validate({
+    specs = { specs, "table" },
+    opts = { opts, { "table", "nil" } }
+  })
+
+  opts = opts and vim.tbl_deep_extend("force", DefaultsOpts, opts) or DefaultOpts
+
+
+  -- Create Commands
+  if opts.install_on_start then
+    vim.api.nvim_create_user_command("AlpacaInstall", function ()
+      install_plugins()
+    end)
+  end
+  vim.api.nvim_create_user_command("AlpacaUpdate", function ()
+    update_plugins()
+  end)
+  vim.api.nvim_create_user_command("AlpacaClean", function ()
+    clean_plugins()
+  end)
+
+
+  -- Parse Specs Table -> Plugins
+  for _, spec in ipairs(specs) do
+    spec = util.to_table(spec)
+    if spec[1]:match("%C+/%C+") then
+      spec.repo = spec[1]
+      spec.url = ("https://github.com/%s.git"):format(spec.repo)
+      spec.name = spec.as or spec.repo:match("%C+/(%C+)")
+      spec.opt = spec.opt or ( spec.event or spec.cmd or spec.ft ) and true or false
+      spec.path = ("%s/%s/%s"):format(PluginPath, spec.opt and "opt" or "start", spec.name)
+      Plugins[spec.repo] = { spec = spec }
+    end
+  end
+
+
+  -- Parse Local Installs -> Plugins
+  for filename, filetype in vim.fs.dir(PluginPath, { depth = 2 }) do
+    if filetype == "directory" and filename:find("/") then
+
+    end
+  end
+end
+
 function setup(specs, opts)
   opts = opts and vim.tbl_deep_extend("force", DefaultOpts, opts) or DefaultOpts
+
+  load_commands(opts)
 
   local plugins = parse_plugins()
   local to_install = {}
 
-  print(vim.inspect(plugins))
 
   for _, spec in ipairs(specs) do
-    print(vim.inspect(spec))
     spec = parse_spec(spec)
     local plugin = plugins[spec[1]]
     if plugin then
@@ -197,21 +231,8 @@ function setup(specs, opts)
     end
   end
 
-  if #to_install > 0 then
-    local total = #to_install
-    local curr = 0
-    util.log(("[%d/%d] Installing Packages"):format(curr, total))
-    for _, spec in ipairs(to_install) do
-      install_spec(spec, function(ok, out)
-        curr = curr + 1
-        if ok then
-          util.log(("[%d/%d] Install Success: %s"):format(curr, total, spec.name))
-          load_spec(spec)
-        else
-          util.log(("[%d/%d] Install Failure: %s"):format(curr, total, spec.name))
-        end
-      end)
-    end
+  if opts.install_on_start then
+    install_all()
   end
 end
 
