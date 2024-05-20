@@ -1,4 +1,4 @@
-local M = {}
+local uv = vim.uv or vim.loop
 
 local PluginPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
 local DefaultOpts = {
@@ -214,6 +214,8 @@ function setup(specs, opts)
     end
   end
 end
+
+local M = {}
 
 function M.setup(specs, opts)
   coroutine.wrap(setup)(specs, opts)
