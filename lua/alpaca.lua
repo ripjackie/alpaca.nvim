@@ -20,6 +20,120 @@ function util.log(msg, level)
   end)
 end
 
+---@class PluginSpec
+---@field [1] string github short url
+---@field as string? local filename alias
+---@field build (string | function)?
+---@field config function?
+---@field branch string?
+---@field tag string?
+---@field event (string | string[])?
+---@field cmd (string | string[])?
+---@field ft (string | string[])?
+---@field name string
+---@field url string
+---@field opt boolean
+---@field path string
+
+---@class PluginInstall
+---@field repo string
+---@field commit string
+---@field branch string?
+---@field tag string?
+
+---@class Plugin
+---@field repo string
+---@field spec PluginSpec?
+---@field install PluginInstall?
+---@field loaded boolean
+---@field lazy boolean
+local Plugin = {}
+
+function Plugin:from_spec(spec)
+  self.__index = self
+  spec.url = ("https://github.com/%s.git"):format(spec[1])
+  spec.name = spec.as or spec[1]:match("%C+/(%C+)")
+  spec.opt = spec.opt or ( spec.event or spec.cmd or spec.ft ) and true or false
+  spec.path = ("%s/%s/%s"):format(PluginPath, spec.opt and "opt" or "start", spec.name)
+  return setmetatable({ repo = spec[1], spec = spec, loaded = false, lazy = false }, self)
+end
+
+function Plugin:from_install(install)
+  self.__index = self
+  return setmetatable({ repo = install.repo, install = install, loaded = false, lazy = false }, self)
+end
+
+function Plugin:install(callback)
+end
+
+function Plugin:update(callback)
+end
+
+function Plugin:clean(callback)
+end
+
+function Plugin:load()
+end
+
+---@class Alpaca
+---@field plugins Plugin[]
+---@field opts table
+local Alpaca = {
+  plugins = {},
+  opts = {
+    install_on_start = true
+  }
+}
+
+function Alpaca:install()
+end
+
+function Alpaca:update()
+end
+
+function Alpaca:clean()
+end
+
+function Alpaca:setup(specs, opts)
+  -- Init Steps
+  vim.validate({
+    specs = { specs, "table" },
+      opts = { opts, { "table", "nil" } }
+  })
+
+  if opts then
+    vim.tbl_deep_extend("force", self.opts, opts)
+  end
+
+  -- Parse Specs
+  for _, spec in ipairs(specs) do
+    spec = util.to_table(spec)
+    local plugin = Plugin:from_spec(spec)
+    if plugin then
+      self.plugins[plugin.repo] = plugin
+    end
+  end
+
+  -- Parse Installs
+  for filename, filetype in vim.fs.dir(PluginPath, { depth = 2 }) do
+    if filetype == "directory" and filename:find("/") then
+      local plugin_path = ("%s/%s"):format(PluginPath, filename)
+      local _, remote = git.get_url(plugin_path)
+      local _, commit = git.rev_parse(plugin_path)
+      local _, ref = git.describe(plugin_path)
+      local install = {
+        commit = commit:match("(%w+)"),
+        branch = ref:match("heads/(%C+)"),
+        tag = ref:match("tags/(%C+)")
+      }
+    end
+  end
+
+  -- Make Autocommands
+
+  -- Setup Complete
+end
+
 
 local function load_commands(opts)
   if not opts.install_on_start then
