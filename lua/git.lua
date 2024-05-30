@@ -30,6 +30,7 @@ end
 
 function git.corun(cmd, path)
   local coro = coroutine.running()
+  print(coro)
   git.run(cmd, path, function(ok, out)
     coroutine.resume(coro, ok, out)
   end)

@@ -1,6 +1,7 @@
 local vim = vim
 local uv = vim.uv or vim.loop
 local git = require("git")
+local Plugin = require("plugin")
 
 local PluginPath = vim.fn.stdpath("data") .. "/site/pack/alpaca"
 
@@ -15,95 +16,42 @@ function util.log(msg, level)
   end)
 end
 
----@class PluginSpec
----@field [1] string github short url
----@field as string? local filename alias
----@field build (string | function)?
----@field config function?
----@field branch string?
----@field tag string?
----@field event (string | string[])?
----@field cmd (string | string[])?
----@field ft (string | string[])?
----@field name string
----@field url string
----@field opt boolean
----@field path string
-
----@class PluginInstall
----@field repo string
----@field opt boolean
----@field path string
----@field commit string
----@field branch string?
----@field tag string?
-
----@class Plugin
----@field repo string
----@field spec PluginSpec?
----@field install PluginInstall?
----@field loaded boolean
----@field lazy boolean
-local Plugin = {}
-
-function Plugin:from_spec(spec)
-  self.__index = self
-  spec.url = ("https://github.com/%s.git"):format(spec[1])
-  spec.name = spec.as or spec[1]:match("%C+/(%C+)")
-  spec.opt = spec.opt or ( spec.event or spec.cmd or spec.ft ) and true or false
-  spec.path = ("%s/%s/%s"):format(PluginPath, spec.opt and "opt" or "start", spec.name)
-  return setmetatable({ repo = spec[1], spec = spec, loaded = false, lazy = spec.opt }, self)
-end
-
-function Plugin:from_install(install)
-  self.__index = self
-  return setmetatable({ repo = install.repo, install = install, loaded = false, lazy = install.opt }, self)
-end
-
-function Plugin:do_install(callback)
-  if self.spec.tag then
-    local ok, out = git.ls_remote_tags(self.spec)
-    if ok then
-      return git.clone(self.spec, out, callback)
-    else
-      return callback(ok, out)
+util.logger = {
+  init = function (self, method)
+    self.__index = self
+    return setmetatable({
+      total = 0,
+      index = 0,
+      errors = {},
+      method = method
+    }, self)
+  end,
+  track = function (self, name, on_success)
+    if self.total == 0 then
+      print(("[Alpaca] [%s] Begin"):format(self.method))
     end
-  else
-    return git.clone(self.spec, self.spec.branch, callback)
-  end
-end
-
-function Plugin:do_update(callback)
-  return callback(false, "Not Implemented")
-end
-
-function Plugin:do_clean(callback)
-  return callback(false, "Not Implemented")
-end
-
-function Plugin:do_load()
-  if self.lazy then
-    if self.spec.event then
-      print("event")
-    elseif self.spec.cmd then
-      print("cmd")
-    elseif self.spec.ft then
-      print("ft")
+    self.total = self.total + 1
+    return function (ok, out)
+      self.index = self.index + 1
+      if ok then
+        -- [Alpaca] [Install] [1/14] Success: sainnhe/everforest
+        -- [Alpaca] [Install] [8/14] Failure: sainnhe/sonokai
+        print(("[Alpaca] [%s] [%d/%d] %s %s"):format(self.method, self.index, self.total, "Success", name))
+        vim.schedule(on_success)
+      else
+        print(("[Alpaca] [%s] [%d/%d] %s %s"):format(self.method, self.index, self.total, "Failure", name))
+        table.insert(self.errors, { name = name, err = out })
+      end
+      if self.index == self.total then
+        print(("[Alpaca] [%s] Done%s"):format(self.method, #self.errors > 0 and " w/ Errors" or ""))
+        if #self.errors > 0 then
+          print(vim.inspect(self.errors))
+        end
+      end
     end
-  else
-    self:do_config()
   end
-  self.loaded = true
-end
+}
 
-function Plugin:do_build()
-end
-
-function Plugin:do_config()
-  if self.spec.config and type(self.spec.config) == "function" then
-    return vim.schedule(self.spec.config)
-  end
-end
 
 ---@class Alpaca
 ---@field plugins Plugin[]
@@ -116,28 +64,14 @@ local Alpaca = {
 }
 
 function Alpaca:install()
-  local total = 0
-  local index = 0
+  local logger = util.logger:init("Install")
   for _, plugin in pairs(self.plugins) do
     if plugin.spec and not plugin.install then
-      if total == 0 then
-        print("Installing new plugins")
-      end
-      total = total + 1
-      Plugin:do_install(function(ok ,out)
-        index = index + 1
-        if ok then
-          print("Install Done " .. plugin.spec.name)
-          vim.cmd("let &rtp = &rtp")
-          Plugin:do_build()
-          Plugin:do_load()
-        else
-          print("Install Fail " .. out)
-        end
-        if index == total then
-          print("all installs finished")
-        end
-      end)
+      plugin:do_install(logger:track(plugin.spec.name, function ()
+        vim.cmd("let &rtp = &rtp")
+        plugin:do_build()
+        plugin:do_load()
+      end))
     end
   end
 end
@@ -151,10 +85,10 @@ function Alpaca:update() -- TODO
         print("Updating Plugins")
       end
       total = total + 1
-      Plugin:do_update(function (ok, out)
+      plugin:do_update(function (ok, out)
         if ok then
           print("Update Done " .. plugin.spec.name)
-          Plugin:do_build()
+          plugin:do_build()
         else
           print("Update Fail " .. out)
         end
@@ -175,7 +109,7 @@ function Alpaca:clean() --TODO
         print("Cleaning Plugins")
       end
       total = total + 1
-      Plugin:do_update(function (ok, out)
+      plugin:do_clean(function (ok, out)
         if ok then
           print("Clean Done " .. plugin.spec.name)
         else
@@ -241,7 +175,7 @@ function Alpaca:setup(specs, opts)
     vim.schedule(function ()
       vim.api.nvim_create_user_command("AlpacaInstall", function ()
         vim.schedule(function ()
-          Alpaca:install()
+          coroutine.wrap(Alpaca.install)(Alpaca)
         end)
       end, {})
     end)
